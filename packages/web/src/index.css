@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+}
+
+.font-ticker {
+  font-family: "Noto Sans JP", "BIZ UDGothic", "Yu Gothic UI", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+}

@@ -1,0 +1,27 @@
+{
+  "name": "cathobar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n shared,server,web -c cyan,green,magenta \"npm run dev -w @cathobar/shared\" \"npm run dev -w @cathobar/server\" \"npm run dev -w @cathobar/web\"",
+    "build": "npm run build -w @cathobar/shared && npm run build -w @cathobar/server && npm run build -w @cathobar/web",
+    "start": "npm run start -w @cathobar/server",
+    "typecheck": "npm run typecheck -w @cathobar/shared && npm run typecheck -w @cathobar/server && npm run typecheck -w @cathobar/web",
+    "test": "vitest run",
+    "preview:win": "powershell -ExecutionPolicy Bypass -File scripts/launch-window.ps1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.1.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
