@@ -1,7 +1,15 @@
 import { z } from 'zod';
 
-export const VisualModeSchema = z.enum(['anobar8-vfd', 'anobar-fed', 'clean']);
+export const VisualModeSchema = z.enum([
+  'anobar8-vfd',
+  'anobar-fed',
+  'shinkansen-led',
+  'clean',
+]);
 export type VisualMode = z.infer<typeof VisualModeSchema>;
+
+export const ShinkansenScrollStyleSchema = z.enum(['pause-head', 'scroll']);
+export type ShinkansenScrollStyle = z.infer<typeof ShinkansenScrollStyleSchema>;
 
 export const VfdPaletteSchema = z.enum(['cyan', 'green', 'white', 'amber']);
 export type VfdPalette = z.infer<typeof VfdPaletteSchema>;
@@ -55,6 +63,8 @@ export const DisplaySettingsSchema = z.object({
   vfdPalette: VfdPaletteSchema.default('cyan'),
   layoutMode: LayoutModeSchema.default('auto'),
   logicalHeight: z.number().int().min(48).max(240).default(96),
+  ledRows: z.number().int().min(16).max(48).default(24),
+  shinkansenStyle: ShinkansenScrollStyleSchema.default('scroll'),
   lanes: z.number().int().min(1).max(4).default(2),
   scrollSpeed: z.number().min(20).max(400).default(72),
   brightness: z.number().min(0.2).max(2.0).default(1.15),

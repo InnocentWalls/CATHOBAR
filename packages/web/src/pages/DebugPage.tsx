@@ -3,10 +3,12 @@ import {
   CHANNEL_LABELS,
   LAYOUT_MODE_LABELS,
   RESOLUTION_PRESETS,
+  SHINKANSEN_STYLE_LABELS,
   VFD_PALETTES,
   VISUAL_MODE_LABELS,
   type ChannelId,
   type LayoutMode,
+  type ShinkansenScrollStyle,
   type VfdPalette,
   type VisualMode,
 } from '@cathobar/shared';
@@ -265,6 +267,39 @@ export function DebugPage() {
                 {LAYOUT_MODE_LABELS[lm].label}
               </button>
             ))}
+
+            {config.display.visualMode === 'shinkansen-led' && (
+              <>
+                {(Object.keys(SHINKANSEN_STYLE_LABELS) as ShinkansenScrollStyle[]).map((st) => (
+                  <button
+                    key={st}
+                    type="button"
+                    onClick={() => void updateConfig({ display: { shinkansenStyle: st } })}
+                    className={`rounded border px-2 py-1 text-xs ${
+                      config.display.shinkansenStyle === st
+                        ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                        : 'border-slate-800 bg-slate-950 text-slate-400'
+                    }`}
+                  >
+                    {SHINKANSEN_STYLE_LABELS[st].label}
+                  </button>
+                ))}
+                {[16, 24, 32].map((rows) => (
+                  <button
+                    key={rows}
+                    type="button"
+                    onClick={() => void updateConfig({ display: { ledRows: rows } })}
+                    className={`rounded border px-2 py-1 font-mono text-xs ${
+                      config.display.ledRows === rows
+                        ? 'border-amber-400 bg-amber-500/20 text-amber-200'
+                        : 'border-slate-800 bg-slate-950 text-slate-400'
+                    }`}
+                  >
+                    {rows}px
+                  </button>
+                ))}
+              </>
+            )}
 
             {config.display.visualMode === 'anobar8-vfd' &&
               (Object.keys(VFD_PALETTES) as VfdPalette[]).map((p) => (

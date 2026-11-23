@@ -15,7 +15,7 @@ import type { EngineStats } from '../engine/ticker-engine.js';
 import { useCathobar } from '../hooks/useCathobar.js';
 
 const CHANNEL_ORDER: ChannelId[] = ['all', 'rss', 'wikipedia', 'weather', 'mastodon', 'clock'];
-const MODE_ORDER: VisualMode[] = ['anobar8-vfd', 'anobar-fed', 'clean'];
+const MODE_ORDER: VisualMode[] = ['anobar8-vfd', 'anobar-fed', 'shinkansen-led', 'clean'];
 const PALETTE_ORDER: VfdPalette[] = ['cyan', 'green', 'white', 'amber'];
 const LAYOUT_ORDER: LayoutMode[] = ['auto', 'lanes', 'danmaku'];
 

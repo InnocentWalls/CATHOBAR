@@ -4,12 +4,14 @@ import {
   CITY_PRESETS,
   LAYOUT_MODE_LABELS,
   MASTODON_INSTANCE_PRESETS,
+  SHINKANSEN_STYLE_LABELS,
   VFD_PALETTES,
   VISUAL_MODE_LABELS,
   type ChannelId,
   type LayoutMode,
   type MastodonStreamType,
   type RssFeedConfig,
+  type ShinkansenScrollStyle,
   type VfdPalette,
   type VisualMode,
   type WeatherLocation,
@@ -266,7 +268,7 @@ export function AdminPage() {
         <section className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
           <h2 className="text-sm font-semibold text-cyan-300">ビジュアル・表示設定</h2>
 
-          <div className="grid gap-2 sm:grid-cols-3">
+          <div className="grid gap-2 sm:grid-cols-2">
             {(Object.keys(VISUAL_MODE_LABELS) as VisualMode[]).map((mode) => (
               <button
                 key={mode}
@@ -308,6 +310,58 @@ export function AdminPage() {
               ))}
             </div>
           </div>
+
+          {config.display.visualMode === 'shinkansen-led' && (
+            <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-950/15 p-3">
+              <div>
+                <div className="mb-1.5 text-xs font-medium text-amber-300">
+                  東北新幹線 3色LED 演出スタイル
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {(Object.keys(SHINKANSEN_STYLE_LABELS) as ShinkansenScrollStyle[]).map((st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => void updateConfig({ display: { shinkansenStyle: st } })}
+                      className={`rounded-lg border p-2 text-left transition ${
+                        config.display.shinkansenStyle === st
+                          ? 'border-amber-400 bg-amber-500/20 text-white'
+                          : 'border-slate-800 bg-slate-900 text-slate-300'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">
+                        {SHINKANSEN_STYLE_LABELS[st].label}
+                      </div>
+                      <div className="mt-0.5 text-[10px] leading-snug text-slate-400">
+                        {SHINKANSEN_STYLE_LABELS[st].description}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="mb-1.5 text-xs text-slate-300">
+                  LED 縦ドット数（実機 16〜24 ドット相当）
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {[16, 24, 32].map((rows) => (
+                    <button
+                      key={rows}
+                      type="button"
+                      onClick={() => void updateConfig({ display: { ledRows: rows } })}
+                      className={`rounded border px-3 py-1 font-mono text-xs ${
+                        config.display.ledRows === rows
+                          ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                          : 'border-slate-800 bg-slate-900 text-slate-300'
+                      }`}
+                    >
+                      {rows} dots
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {config.display.visualMode === 'anobar8-vfd' && (
             <div>

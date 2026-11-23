@@ -7,8 +7,9 @@ import {
 } from '../src/engine/ticker-layout.js';
 
 describe('computeLogicalSize', () => {
-  it('adapts logical width to arbitrary monitor aspect ratios', () => {
+  it('adapts logical width to arbitrary monitor aspect ratios including low LED rows', () => {
     expect(computeLogicalSize(1920, 480, 96)).toEqual({ width: 384, height: 96 });
+    expect(computeLogicalSize(1920, 480, 24)).toEqual({ width: 96, height: 24 });
     expect(computeLogicalSize(1280, 400, 96)).toEqual({ width: 307, height: 96 });
     expect(computeLogicalSize(640, 96, 96)).toEqual({ width: 640, height: 96 });
     expect(computeLogicalSize(100, 100, 96)).toEqual({ width: 160, height: 96 });
@@ -58,6 +59,8 @@ describe('TickerLayoutEngine', () => {
       logicalHeight: 96,
       lanes: 2,
       layoutMode: 'lanes',
+      visualMode: 'anobar8-vfd',
+      shinkansenStyle: 'pause-head',
       activeChannel: 'all',
       scrollSpeed: 70,
       showBadge: true,
@@ -83,6 +86,8 @@ describe('TickerLayoutEngine', () => {
       logicalHeight: 96,
       lanes: 1,
       layoutMode: 'lanes',
+      visualMode: 'anobar8-vfd',
+      shinkansenStyle: 'pause-head',
       activeChannel: 'all',
       scrollSpeed: 1000,
       showBadge: true,
@@ -91,7 +96,6 @@ describe('TickerLayoutEngine', () => {
     expect(first).toHaveLength(1);
     expect(first[0]?.item.id).toBe('once');
 
-    // Step enough time for the span to exit offscreen
     for (let i = 0; i < 15; i += 1) {
       engine.step({
         dtSec: 0.1,
@@ -100,6 +104,8 @@ describe('TickerLayoutEngine', () => {
         logicalHeight: 96,
         lanes: 1,
         layoutMode: 'lanes',
+        visualMode: 'anobar8-vfd',
+        shinkansenStyle: 'pause-head',
         activeChannel: 'all',
         scrollSpeed: 1000,
         showBadge: true,
@@ -114,6 +120,8 @@ describe('TickerLayoutEngine', () => {
       logicalHeight: 96,
       lanes: 1,
       layoutMode: 'lanes',
+      visualMode: 'anobar8-vfd',
+      shinkansenStyle: 'pause-head',
       activeChannel: 'all',
       scrollSpeed: 70,
       showBadge: true,
@@ -140,6 +148,8 @@ describe('TickerLayoutEngine', () => {
       logicalHeight: 96,
       lanes: 1,
       layoutMode: 'danmaku',
+      visualMode: 'anobar8-vfd',
+      shinkansenStyle: 'pause-head',
       activeChannel: 'mastodon',
       scrollSpeed: 70,
       showBadge: true,
@@ -149,5 +159,46 @@ describe('TickerLayoutEngine', () => {
     expect(spans).toHaveLength(3);
     const yRatios = new Set(spans.map((s) => s.yRatio));
     expect(yRatios.size).toBe(3);
+  });
+
+  it('runs Shinkansen LED pause-head choreography (slide-in -> pause -> scroll)', () => {
+    const engine = new TickerLayoutEngine();
+    engine.setPool(
+      [makeItem('s1', '東北新幹線はやぶさ号 車内文字ニュース表示のテスト長文テキストです')],
+      'all',
+    );
+
+    const stepShinkansen = (dtSec: number) =>
+      engine.step({
+        dtSec,
+        tickerWidth: 96,
+        tickerHeight: 21,
+        logicalHeight: 24,
+        lanes: 1,
+        layoutMode: 'auto',
+        visualMode: 'shinkansen-led',
+        shinkansenStyle: 'pause-head',
+        activeChannel: 'all',
+        scrollSpeed: 24,
+        showBadge: true,
+        measureText: measure,
+      });
+
+    // Slide-in phase
+    const initial = stepShinkansen(0.05);
+    expect(initial).toHaveLength(1);
+    expect(initial[0]?.x).toBe(4);
+    expect(initial[0]?.yRatio).toBeGreaterThan(0.52);
+
+    // Finish slide-in (0.3s total) -> now paused at head (x=4, yRatio=0.52)
+    for (let i = 0; i < 4; i += 1) stepShinkansen(0.08);
+    const paused = stepShinkansen(0.05);
+    expect(paused[0]?.x).toBe(4);
+    expect(paused[0]?.yRatio).toBeCloseTo(0.52);
+
+    // Finish 1.3s pause -> starts scrolling left (x < 4)
+    for (let i = 0; i < 16; i += 1) stepShinkansen(0.1);
+    const scrolling = stepShinkansen(0.1);
+    expect(scrolling[0]?.x).toBeLessThan(4);
   });
 });

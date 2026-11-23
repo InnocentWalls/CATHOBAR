@@ -52,11 +52,12 @@ export class TickerEngine {
 
   syncState(items: TickerItem[], activity: ActivityBucket[], config: AppConfig): void {
     const channelChanged = this.config.activeChannel !== config.activeChannel;
+    const modeChanged = this.config.display.visualMode !== config.display.visualMode;
     this.config = config;
     this.activity = activity;
     this.updateWeatherCache(items);
     this.layout.setPool(items, config.activeChannel);
-    if (channelChanged) {
+    if (channelChanged || modeChanged) {
       this.layout.clearActive();
     }
   }
@@ -94,10 +95,13 @@ export class TickerEngine {
     this.lastFrameMs = nowMs;
 
     const { display, activeChannel } = this.config;
+    const targetLogicalHeight =
+      display.visualMode === 'shinkansen-led' ? display.ledRows : display.logicalHeight;
+
     const logical = computeLogicalSize(
       this.viewportWidth,
       this.viewportHeight,
-      display.logicalHeight,
+      targetLogicalHeight,
     );
 
     const renderScale =
@@ -105,18 +109,26 @@ export class TickerEngine {
         ? Math.max(1, Math.min(4, this.viewportHeight / logical.height))
         : 1;
 
-    this.renderer2d.configure(logical.width, logical.height, renderScale);
+    this.renderer2d.configure(logical.width, logical.height, renderScale, display.visualMode);
 
     const graphHeight = display.showActivityGraph
-      ? Math.max(8, Math.round(logical.height * 0.14))
+      ? logical.height <= 40
+        ? Math.max(3, Math.round(logical.height * 0.14))
+        : Math.max(8, Math.round(logical.height * 0.14))
       : 0;
     const tickerHeight = logical.height - graphHeight;
     const overlayWidth = this.renderer2d.getClockOverlayWidth(
       tickerHeight,
       display.showClockOverlay,
       activeChannel,
+      display.visualMode,
     );
-    const tickerWidth = Math.max(80, logical.width - overlayWidth);
+    const tickerWidth = Math.max(40, logical.width - overlayWidth);
+
+    const effectiveSpeed =
+      display.visualMode === 'shinkansen-led'
+        ? display.scrollSpeed * (logical.height / 72)
+        : display.scrollSpeed;
 
     const spans = this.layout.step({
       dtSec,
@@ -125,8 +137,10 @@ export class TickerEngine {
       logicalHeight: logical.height,
       lanes: display.lanes,
       layoutMode: display.layoutMode,
+      visualMode: display.visualMode,
+      shinkansenStyle: display.shinkansenStyle,
       activeChannel,
-      scrollSpeed: display.scrollSpeed,
+      scrollSpeed: effectiveSpeed,
       showBadge: display.showSourceBadge,
       measureText: this.renderer2d.measureText,
     });

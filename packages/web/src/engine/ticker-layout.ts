@@ -1,4 +1,4 @@
-import type { ChannelId, LayoutMode, TickerItem } from '@cathobar/shared';
+import type { ChannelId, LayoutMode, ShinkansenScrollStyle, TickerItem, VisualMode } from '@cathobar/shared';
 
 export interface ActiveTickerSpan {
   uid: string;
@@ -31,8 +31,9 @@ export function computeLogicalSize(
   const safeH = Math.max(1, viewportHeight);
   const safeW = Math.max(1, viewportWidth);
   const aspect = safeW / safeH;
-  const height = Math.max(48, Math.round(logicalHeight));
-  const width = Math.max(160, Math.round(height * aspect));
+  const height = Math.max(16, Math.round(logicalHeight));
+  const minWidth = Math.max(48, Math.round(height * 1.6667));
+  const width = Math.max(minWidth, Math.round(height * aspect));
   return { width, height };
 }
 
@@ -59,10 +60,18 @@ export interface StepParams {
   logicalHeight: number;
   lanes: number;
   layoutMode: LayoutMode;
+  visualMode: VisualMode;
+  shinkansenStyle: ShinkansenScrollStyle;
   activeChannel: ChannelId;
   scrollSpeed: number;
   showBadge: boolean;
   measureText: MeasureTextFn;
+}
+
+interface ShinkansenState {
+  span: ActiveTickerSpan;
+  phase: 'slide-in' | 'pause' | 'scroll' | 'slide-out';
+  timerSec: number;
 }
 
 export class TickerLayoutEngine {
@@ -72,6 +81,7 @@ export class TickerLayoutEngine {
   private poolCursor = 0;
   private uidCounter = 0;
   private danmakuSlotCursor = 0;
+  private shinkansenState: ShinkansenState | null = null;
 
   setPool(items: TickerItem[], activeChannel: ChannelId): void {
     const filtered = filterByChannel(items, activeChannel).filter((item) => !item.oneShot);
@@ -104,6 +114,7 @@ export class TickerLayoutEngine {
   clearActive(): void {
     this.spans = [];
     this.priorityQueue = [];
+    this.shinkansenState = null;
   }
 
   step(params: StepParams): ActiveTickerSpan[] {
@@ -114,6 +125,8 @@ export class TickerLayoutEngine {
       logicalHeight,
       lanes,
       layoutMode,
+      visualMode,
+      shinkansenStyle,
       activeChannel,
       scrollSpeed,
       showBadge,
@@ -121,6 +134,39 @@ export class TickerLayoutEngine {
     } = params;
 
     const clampedDt = Math.min(0.1, Math.max(0, dtSec));
+
+    if (visualMode === 'shinkansen-led') {
+      if (shinkansenStyle === 'pause-head') {
+        this.spans = [];
+        return this.stepShinkansenPauseHead(
+          clampedDt,
+          tickerWidth,
+          tickerHeight,
+          scrollSpeed,
+          showBadge,
+          measureText,
+        );
+      }
+      this.shinkansenState = null;
+      const ledFontSize = Math.max(11, Math.round(tickerHeight * 0.78));
+      const fadeMargin = Math.max(4, Math.round(tickerWidth * 0.03));
+      for (const span of this.spans) {
+        span.x -= scrollSpeed * clampedDt;
+        span.alpha = computeEdgeAlpha(span.x, span.width, tickerWidth, fadeMargin);
+      }
+      this.spans = this.spans.filter((s) => s.x + s.width > -4);
+      this.stepLanesWithFont(
+        tickerWidth,
+        1,
+        ledFontSize,
+        showBadge,
+        fadeMargin,
+        measureText,
+      );
+      return this.spans;
+    }
+
+    this.shinkansenState = null;
     const fadeMargin = Math.max(12, Math.round(tickerWidth * 0.04));
 
     const effectiveMode: 'lanes' | 'danmaku' =
@@ -140,11 +186,13 @@ export class TickerLayoutEngine {
     if (effectiveMode === 'danmaku') {
       this.stepDanmaku(tickerWidth, tickerHeight, logicalHeight, showBadge, fadeMargin, measureText);
     } else {
-      this.stepLanes(
+      const safeLanes = Math.max(1, lanes);
+      const laneHeight = tickerHeight / safeLanes;
+      const fontSize = Math.max(10, Math.min(laneHeight * 0.68, logicalHeight * 0.48));
+      this.stepLanesWithFont(
         tickerWidth,
-        tickerHeight,
-        logicalHeight,
-        Math.max(1, lanes),
+        safeLanes,
+        fontSize,
         showBadge,
         fadeMargin,
         measureText,
@@ -154,18 +202,114 @@ export class TickerLayoutEngine {
     return this.spans;
   }
 
-  private stepLanes(
+  private stepShinkansenPauseHead(
+    dtSec: number,
     tickerWidth: number,
     tickerHeight: number,
-    logicalHeight: number,
+    scrollSpeed: number,
+    showBadge: boolean,
+    measureText: MeasureTextFn,
+  ): ActiveTickerSpan[] {
+    const fontSize = Math.max(11, Math.round(tickerHeight * 0.78));
+
+    if (!this.shinkansenState) {
+      const nextItem = this.pickNextItem();
+      if (!nextItem) return [];
+      const { badgeWidth, totalWidth } = measureSpanWidth(
+        nextItem,
+        fontSize,
+        showBadge,
+        measureText,
+      );
+      this.uidCounter += 1;
+      this.shinkansenState = {
+        phase: 'slide-in',
+        timerSec: 0,
+        span: {
+          uid: `span-${this.uidCounter}`,
+          item: nextItem,
+          lane: 0,
+          yRatio: 1.35,
+          fontSize,
+          speedScale: 1,
+          x: 4,
+          width: totalWidth,
+          badgeWidth,
+          alpha: 0,
+        },
+      };
+    }
+
+    const st = this.shinkansenState;
+    st.timerSec += dtSec;
+
+    // Recalculate metrics if resolution/fontSize changed mid-flight
+    if (Math.abs(st.span.fontSize - fontSize) > 0.5) {
+      const { badgeWidth, totalWidth } = measureSpanWidth(
+        st.span.item,
+        fontSize,
+        showBadge,
+        measureText,
+      );
+      st.span.fontSize = fontSize;
+      st.span.badgeWidth = badgeWidth;
+      st.span.width = totalWidth;
+    }
+
+    const needsScroll = st.span.width > tickerWidth - 8;
+
+    if (st.phase === 'slide-in') {
+      const duration = 0.26;
+      const t = Math.min(1, st.timerSec / duration);
+      const eased = 1 - (1 - t) * (1 - t) * (1 - t);
+      st.span.yRatio = 1.35 - 0.83 * eased;
+      st.span.alpha = t;
+      if (t >= 1) {
+        st.phase = 'pause';
+        st.timerSec = 0;
+        st.span.yRatio = 0.52;
+        st.span.alpha = 1;
+      }
+    } else if (st.phase === 'pause') {
+      st.span.x = 4;
+      st.span.yRatio = 0.52;
+      st.span.alpha = 1;
+      const holdDuration = needsScroll ? 1.3 : 2.5;
+      if (st.timerSec >= holdDuration) {
+        st.phase = needsScroll ? 'scroll' : 'slide-out';
+        st.timerSec = 0;
+      }
+    } else if (st.phase === 'scroll') {
+      st.span.x -= scrollSpeed * dtSec;
+      st.span.yRatio = 0.52;
+      st.span.alpha = 1;
+      if (st.span.x + st.span.width <= -4) {
+        this.shinkansenState = null;
+        return [];
+      }
+    } else if (st.phase === 'slide-out') {
+      const duration = 0.22;
+      const t = Math.min(1, st.timerSec / duration);
+      st.span.yRatio = 0.52 - 0.9 * t;
+      st.span.alpha = 1 - t;
+      if (t >= 1) {
+        this.shinkansenState = null;
+        return [];
+      }
+    }
+
+    return [st.span];
+  }
+
+  private stepLanesWithFont(
+    tickerWidth: number,
     lanes: number,
+    fontSize: number,
     showBadge: boolean,
     fadeMargin: number,
     measureText: MeasureTextFn,
   ): void {
-    const laneHeight = tickerHeight / lanes;
-    const fontSize = Math.max(10, Math.min(laneHeight * 0.68, logicalHeight * 0.48));
-    const gap = Math.max(24, Math.round(fontSize * 1.4));
+    const gap = Math.max(16, Math.round(fontSize * 1.4));
 
     for (let lane = 0; lane < lanes; lane += 1) {
       let rightmost = -Infinity;
@@ -215,7 +359,6 @@ export class TickerLayoutEngine {
     const fontSize = Math.max(10, Math.min(slotHeight * 0.82, logicalHeight * 0.32));
     const gap = Math.max(14, Math.round(fontSize * 0.9));
 
-    // Spawn up to 3 items per frame when traffic is bursting, preferring least-occupied vertical slots
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const candidateItem = this.peekNextItem();
       if (!candidateItem) break;
@@ -240,7 +383,6 @@ export class TickerLayoutEngine {
         }
       }
 
-      // Under heavy burst from priority queue, allow organic overlap on rotating slot
       const allowBurstOverlap = bestSlot === -1 && this.priorityQueue.length > 0 && attempt === 0;
       if (bestSlot === -1 && !allowBurstOverlap) {
         break;
@@ -306,12 +448,12 @@ function measureSpanWidth(
   showBadge: boolean,
   measureText: MeasureTextFn,
 ): { badgeWidth: number; totalWidth: number } {
-  const badgeSize = Math.max(8, fontSize * 0.78);
-  const badgeWidth = showBadge ? Math.ceil(measureText(`[${item.badge}]`, badgeSize, 700)) + 6 : 0;
+  const badgeSize = Math.max(8, fontSize * 0.84);
+  const badgeWidth = showBadge ? Math.ceil(measureText(`[${item.badge}]`, badgeSize, 700)) + 4 : 0;
   const textWidth = Math.ceil(measureText(item.text, fontSize, 500));
   return {
     badgeWidth,
-    totalWidth: badgeWidth + textWidth + 8,
+    totalWidth: badgeWidth + textWidth + 6,
   };
 }
 

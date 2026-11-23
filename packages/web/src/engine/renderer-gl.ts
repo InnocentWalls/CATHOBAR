@@ -30,7 +30,7 @@ in vec2 v_uv;
 uniform sampler2D u_tex;
 uniform vec2 u_logicalSize;
 uniform vec3 u_vfdColor;
-uniform int u_mode; // 0 = anobar8-vfd, 1 = anobar-fed, 2 = clean
+uniform int u_mode; // 0 = anobar8-vfd, 1 = anobar-fed, 2 = clean, 3 = shinkansen-led
 uniform float u_brightness;
 uniform float u_dotIntensity;
 uniform float u_bloom;
@@ -82,6 +82,21 @@ void main() {
     vec3 halo = bloomVec * u_bloom * u_brightness;
     vec3 unlitMesh = vec3(0.012, 0.016, 0.022) * mask;
     outColor = vec4(clamp(unlitMesh + lit + halo, 0.0, 1.0), 1.0);
+  } else if (u_mode == 3) {
+    // Tohoku Shinkansen 3-color circular LED dot matrix
+    vec2 cellUv = (floor(v_uv * u_logicalSize) + 0.5) / max(u_logicalSize, vec2(1.0));
+    vec3 cellBase = texture(u_tex, cellUv).rgb;
+    vec2 cellPos = fract(v_uv * u_logicalSize) - 0.5;
+    float radius = length(cellPos);
+    float ledDisc = 1.0 - smoothstep(0.30, 0.47, radius);
+    float ledCore = 1.0 - smoothstep(0.0, 0.28, radius);
+    float ledMask = mix(1.0, ledDisc, max(0.35, u_dotIntensity));
+    float luma = dot(cellBase, vec3(0.299, 0.587, 0.114));
+    vec3 quantized = step(0.18, luma) * cellBase;
+    vec3 lit = quantized * u_brightness * (0.85 + 0.4 * ledCore) * ledMask;
+    vec3 halo = bloomVec * u_bloom * 0.65 * u_brightness;
+    vec3 housing = vec3(0.022, 0.024, 0.024) + vec3(0.028, 0.030, 0.028) * ledDisc;
+    outColor = vec4(clamp(housing + lit + halo, 0.0, 1.0), 1.0);
   } else {
     // Clean modern display
     vec3 lit = base * mix(0.85, 1.15, clamp((u_brightness - 0.5) / 1.5, 0.0, 1.0));
@@ -194,7 +209,12 @@ export class RendererGL {
     gl.bindTexture(gl.TEXTURE_2D, readTex);
     gl.uniform1i(gl.getUniformLocation(this.persistProgram, 'u_prev'), 1);
 
-    const decay = display.visualMode === 'clean' ? 0 : display.persistence * 0.72;
+    const decay =
+      display.visualMode === 'clean'
+        ? 0
+        : display.visualMode === 'shinkansen-led'
+          ? display.persistence * 0.25
+          : display.persistence * 0.72;
     gl.uniform1f(gl.getUniformLocation(this.persistProgram, 'u_decay'), decay);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
@@ -223,7 +243,13 @@ export class RendererGL {
     );
 
     const modeInt =
-      display.visualMode === 'anobar8-vfd' ? 0 : display.visualMode === 'anobar-fed' ? 1 : 2;
+      display.visualMode === 'anobar8-vfd'
+        ? 0
+        : display.visualMode === 'anobar-fed'
+          ? 1
+          : display.visualMode === 'shinkansen-led'
+            ? 3
+            : 2;
     gl.uniform1i(gl.getUniformLocation(this.displayProgram, 'u_mode'), modeInt);
     gl.uniform1f(gl.getUniformLocation(this.displayProgram, 'u_brightness'), display.brightness);
     gl.uniform1f(gl.getUniformLocation(this.displayProgram, 'u_dotIntensity'), display.dotIntensity);

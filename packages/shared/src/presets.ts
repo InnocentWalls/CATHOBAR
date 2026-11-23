@@ -1,4 +1,11 @@
-import type { AppConfig, ChannelId, LayoutMode, VfdPalette, VisualMode } from './schema.js';
+import type {
+  AppConfig,
+  ChannelId,
+  LayoutMode,
+  ShinkansenScrollStyle,
+  VfdPalette,
+  VisualMode,
+} from './schema.js';
 
 export const DEFAULT_CONFIG: AppConfig = {
   version: 1,
@@ -8,6 +15,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     vfdPalette: 'cyan',
     layoutMode: 'auto',
     logicalHeight: 96,
+    ledRows: 24,
+    shinkansenStyle: 'scroll',
     lanes: 2,
     scrollSpeed: 72,
     brightness: 1.15,
@@ -86,6 +95,7 @@ export const RESOLUTION_PRESETS: ResolutionPreset[] = [
   { id: 'twihai-1480x320', label: '1480 × 320', width: 1480, height: 320, note: '超横長バー液晶 (4.6:1)' },
   { id: 'anobar-640x96', label: '640 × 96', width: 640, height: 96, note: '初代 ANOBAR 実寸比率 (6.7:1)' },
   { id: 'anobar8-720x96', label: '720 × 96', width: 720, height: 96, note: 'ANOBAR8 筐体比 (7.5:1)' },
+  { id: 'shinkansen-1280x160', label: '1280 × 160', width: 1280, height: 160, note: '新幹線 車内LED表示器比 (8:1)' },
 ];
 
 export const VFD_PALETTES: Record<
@@ -107,9 +117,27 @@ export const VISUAL_MODE_LABELS: Record<VisualMode, { label: string; description
     label: '初代 ANOBAR (FED フルカラー)',
     description: '高輝度フルカラー自発光ドットマトリクス表現',
   },
+  'shinkansen-led': {
+    label: '東北新幹線 (3色LED)',
+    description: '丸型LED素子＋緑・橙・赤の3色ドットマトリクス＆車内ニュース風演出',
+  },
   clean: {
     label: 'クリーン (モダン表示)',
     description: 'ドット加工を抑えた高精細・高視認性モード',
+  },
+};
+
+export const SHINKANSEN_STYLE_LABELS: Record<
+  ShinkansenScrollStyle,
+  { label: string; description: string }
+> = {
+  scroll: {
+    label: '連続スクロール (右→左)',
+    description: '1行の3色LED表示器として右から左へ途切れなく流し続ける（既定）',
+  },
+  'pause-head': {
+    label: '頭出し停止 (オプション)',
+    description: '下からスライドインし、先頭で一瞬静止してから左へ流す演出',
   },
 };
 
