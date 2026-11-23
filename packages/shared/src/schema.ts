@@ -96,7 +96,7 @@ export const WeatherSourceConfigSchema = z.object({
 });
 
 export const MastodonSourceConfigSchema = z.object({
-  enabled: z.boolean().default(true),
+  enabled: z.boolean().default(false),
   instanceUrl: z.string().url().default('https://mstdn.jp'),
   stream: MastodonStreamTypeSchema.default('public:local'),
   hashtag: z.string().max(60).default(''),

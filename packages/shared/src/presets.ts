@@ -67,7 +67,7 @@ export const DEFAULT_CONFIG: AppConfig = {
       ],
     },
     mastodon: {
-      enabled: true,
+      enabled: false,
       instanceUrl: 'https://mstdn.jp',
       stream: 'public:local',
       hashtag: '',

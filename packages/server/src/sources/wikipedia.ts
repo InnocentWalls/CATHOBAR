@@ -59,7 +59,9 @@ export class WikipediaSource implements TickerSource {
       const url = `https://${lang}.wikipedia.org/api/rest_v1/page/random/summary`;
       const res = await fetch(url, {
         headers: {
-          'User-Agent': 'CATHOBAR/0.1 (local desktop ticker; https://localhost)',
+          'User-Agent':
+            process.env.CATHOBAR_USER_AGENT ||
+            'CATHOBAR/0.1 (local desktop ticker; https://github.com/)',
           Accept: 'application/json',
         },
         signal: AbortSignal.timeout(10_000),
