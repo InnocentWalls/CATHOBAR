@@ -67,7 +67,13 @@ Node.js とモダンブラウザだけで動作するため、OS を問わず検
 1. **仮想モニタ枠で確認（どの OS でも共通）**:
    ブラウザで `http://localhost:3000/debug` を開くと、各種ツイ廃モニタ解像度やカスタム解像度をズーム付きで確認できます。
 2. **実サイズのフレームレスウィンドウで開く**:
-   * **Windows**（同梱スクリプト利用）：
+   * **Windows（1クリック起動：サーバー自動起動＆ウィンドウ終了時に自動停止）**:
+     `scripts/start-cathobar.vbs` をダブルクリックすると、ターミナル画面を出さずに裏でサーバーを起動し、超横長ウィンドウを開きます（ウィンドウを閉じるとサーバーも自動終了します）。
+     デスクトップショートカットを作成してタスクバー等へピン留めしたい場合は以下を実行してください：
+     ```powershell
+     powershell -ExecutionPolicy Bypass -File scripts/create-shortcut-win.ps1
+     ```
+     ウィンドウのみ開く場合（`npm run dev` 確認時など）：
      ```powershell
      powershell -ExecutionPolicy Bypass -File scripts/launch-window.ps1 -Width 1280 -Height 400
      ```

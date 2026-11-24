@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { TickerItem } from '@cathobar/shared';
+import { DEFAULT_CONFIG, type TickerItem } from '@cathobar/shared';
 import {
   computeEdgeAlpha,
   computeLogicalSize,
@@ -200,5 +200,141 @@ describe('TickerLayoutEngine', () => {
     for (let i = 0; i < 16; i += 1) stepShinkansen(0.1);
     const scrolling = stepShinkansen(0.1);
     expect(scrolling[0]?.x).toBeLessThan(4);
+  });
+
+  it('prunes pool, priorityQueue, active spans, and shinkansenState when a source is disabled in ALL MIX', () => {
+    const sources = structuredClone(DEFAULT_CONFIG.sources);
+    const rssItem = makeItem('r1', 'RSS Item', { source: 'rss' });
+    const wikiItem = makeItem('w1', 'Wiki Item', { source: 'wikipedia', priority: 'high' });
+
+    const engine = new TickerLayoutEngine();
+    engine.setPool([rssItem, wikiItem], 'all', sources);
+    engine.enqueue([wikiItem], 'all', sources);
+
+    const initialSpans = engine.step({
+      dtSec: 0.016,
+      tickerWidth: 400,
+      tickerHeight: 82,
+      logicalHeight: 96,
+      lanes: 2,
+      layoutMode: 'lanes',
+      visualMode: 'anobar8-vfd',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 70,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(initialSpans.some((s) => s.item.source === 'wikipedia')).toBe(true);
+
+    // Disable wikipedia and sync pool
+    sources.wikipedia.enabled = false;
+    engine.setPool([rssItem, wikiItem], 'all', sources);
+
+    const afterDisable = engine.step({
+      dtSec: 0.016,
+      tickerWidth: 400,
+      tickerHeight: 82,
+      logicalHeight: 96,
+      lanes: 2,
+      layoutMode: 'lanes',
+      visualMode: 'anobar8-vfd',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 70,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(afterDisable.some((s) => s.item.source === 'wikipedia')).toBe(false);
+    expect(afterDisable.some((s) => s.item.source === 'rss')).toBe(true);
+
+    // Also verify shinkansen-led pause-head clears disabled active item immediately
+    const shinkansenEngine = new TickerLayoutEngine();
+    const enabledSources = structuredClone(DEFAULT_CONFIG.sources);
+    shinkansenEngine.setPool([wikiItem], 'all', enabledSources);
+    const shinkansenInitial = shinkansenEngine.step({
+      dtSec: 0.05,
+      tickerWidth: 96,
+      tickerHeight: 21,
+      logicalHeight: 24,
+      lanes: 1,
+      layoutMode: 'auto',
+      visualMode: 'shinkansen-led',
+      shinkansenStyle: 'pause-head',
+      activeChannel: 'all',
+      scrollSpeed: 24,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(shinkansenInitial).toHaveLength(1);
+
+    enabledSources.wikipedia.enabled = false;
+    shinkansenEngine.setPool([wikiItem], 'all', enabledSources);
+    const shinkansenAfter = shinkansenEngine.step({
+      dtSec: 0.05,
+      tickerWidth: 96,
+      tickerHeight: 21,
+      logicalHeight: 24,
+      lanes: 1,
+      layoutMode: 'auto',
+      visualMode: 'shinkansen-led',
+      shinkansenStyle: 'pause-head',
+      activeChannel: 'all',
+      scrollSpeed: 24,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(shinkansenAfter).toHaveLength(0);
+  });
+
+  it('filters individual disabled RSS feeds via sourceKey and drops disabled items on enqueue', () => {
+    const sources = structuredClone(DEFAULT_CONFIG.sources);
+    sources.wikipedia.enabled = false;
+    sources.rss.feeds = sources.rss.feeds.map((f) =>
+      f.id === 'nhk-news' ? { ...f, enabled: false } : f,
+    );
+
+    const nhkItem: TickerItem = {
+      ...makeItem('nhk1', 'NHK Headline', { source: 'rss' }),
+      sourceKey: 'rss:nhk-news',
+    };
+    const itmediaItem: TickerItem = {
+      ...makeItem('it1', 'ITmedia Headline', { source: 'rss' }),
+      sourceKey: 'rss:itmedia-news',
+    };
+    const disabledWiki = makeItem('w-off', 'Disabled Wiki', {
+      source: 'wikipedia',
+      priority: 'high',
+      oneShot: true,
+    });
+    const pushItem = makeItem('push1', 'Push Notice', {
+      source: 'push',
+      priority: 'high',
+      oneShot: true,
+    });
+
+    const engine = new TickerLayoutEngine();
+    engine.setPool([nhkItem, itmediaItem], 'all', sources);
+    engine.enqueue([disabledWiki, pushItem], 'all', sources);
+
+    const spans = engine.step({
+      dtSec: 0.016,
+      tickerWidth: 400,
+      tickerHeight: 82,
+      logicalHeight: 96,
+      lanes: 2,
+      layoutMode: 'lanes',
+      visualMode: 'anobar8-vfd',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 70,
+      showBadge: true,
+      measureText: measure,
+    });
+
+    expect(spans.some((s) => s.item.id === 'nhk1')).toBe(false);
+    expect(spans.some((s) => s.item.id === 'w-off')).toBe(false);
+    expect(spans.some((s) => s.item.id === 'it1')).toBe(true);
+    expect(spans.some((s) => s.item.id === 'push1')).toBe(true);
   });
 });

@@ -13,12 +13,12 @@ export class WikipediaSource implements TickerSource {
   readonly id = 'wikipedia' as const;
   private timer: ReturnType<typeof setInterval> | null = null;
   private pollIntervalSec = 45;
+  private lastLang = '';
 
   constructor(private readonly ctx: SourceContext) {}
 
   start(): void {
-    this.syncTimer();
-    void this.refreshNow();
+    this.onConfigUpdate(this.ctx.getConfig());
   }
 
   stop(): void {
@@ -30,15 +30,17 @@ export class WikipediaSource implements TickerSource {
   }
 
   onConfigUpdate(config: AppConfig): void {
-    const shouldRun =
-      config.sources.wikipedia.enabled &&
-      (config.activeChannel === 'all' || config.activeChannel === 'wikipedia');
-    if (!shouldRun) {
+    if (!this.isConfigActive(config)) {
       this.stop();
       return;
     }
-    if (this.pollIntervalSec !== config.sources.wikipedia.pollIntervalSec || !this.timer) {
+    if (
+      !this.timer ||
+      this.pollIntervalSec !== config.sources.wikipedia.pollIntervalSec ||
+      this.lastLang !== config.sources.wikipedia.lang
+    ) {
       this.pollIntervalSec = config.sources.wikipedia.pollIntervalSec;
+      this.lastLang = config.sources.wikipedia.lang;
       this.syncTimer();
       void this.refreshNow();
     }
@@ -47,9 +49,7 @@ export class WikipediaSource implements TickerSource {
   async refreshNow(): Promise<void> {
     const config = this.ctx.getConfig();
     const wikiCfg = config.sources.wikipedia;
-    const shouldRun =
-      wikiCfg.enabled && (config.activeChannel === 'all' || config.activeChannel === 'wikipedia');
-    if (!shouldRun) {
+    if (!this.isConfigActive(config)) {
       this.ctx.updateStatus({ id: this.id, active: false, connected: false });
       return;
     }
@@ -70,6 +70,9 @@ export class WikipediaSource implements TickerSource {
         throw new Error(`HTTP ${res.status}`);
       }
       const data = (await res.json()) as WikiSummaryResponse;
+      if (!this.isConfigActive(this.ctx.getConfig())) {
+        return;
+      }
       const title = cleanText(data.title ?? '');
       const extract = cleanText(data.extract ?? '');
       if (title) {
@@ -95,6 +98,9 @@ export class WikipediaSource implements TickerSource {
         lastError: null,
       });
     } catch (err) {
+      if (!this.isConfigActive(this.ctx.getConfig())) {
+        return;
+      }
       this.ctx.updateStatus({
         id: this.id,
         active: true,
@@ -103,6 +109,13 @@ export class WikipediaSource implements TickerSource {
         lastError: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  private isConfigActive(config: AppConfig): boolean {
+    return (
+      config.sources.wikipedia.enabled &&
+      (config.activeChannel === 'all' || config.activeChannel === 'wikipedia')
+    );
   }
 
   private syncTimer(): void {

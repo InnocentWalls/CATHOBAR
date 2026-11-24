@@ -148,6 +148,7 @@ export const TickerItemSchema = z.object({
   priority: z.enum(['normal', 'high']).default('normal'),
   oneShot: z.boolean().default(false),
   replaceKey: z.string().optional(),
+  sourceKey: z.string().optional(),
   url: z.string().optional(),
 });
 export type TickerItem = z.infer<typeof TickerItemSchema>;

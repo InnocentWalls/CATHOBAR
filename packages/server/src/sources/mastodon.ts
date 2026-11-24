@@ -100,6 +100,7 @@ export class MastodonSource implements TickerSource {
     this.shouldRun = false;
     this.clearTimers();
     this.closeSocket();
+    this.seenIds.clear();
     this.ctx.updateStatus({ id: this.id, active: false, connected: false });
   }
 
@@ -169,6 +170,7 @@ export class MastodonSource implements TickerSource {
       this.ws = ws;
 
       ws.on('open', () => {
+        if (!this.shouldRun) return;
         this.backoffMs = 3000;
         this.stopPollingFallback();
         this.ctx.updateStatus({
@@ -201,6 +203,7 @@ export class MastodonSource implements TickerSource {
   }
 
   private handleWsMessage(raw: string): void {
+    if (!this.shouldRun) return;
     let evt: MastodonStreamEvent;
     try {
       evt = JSON.parse(raw) as MastodonStreamEvent;
@@ -218,7 +221,9 @@ export class MastodonSource implements TickerSource {
       return;
     }
 
-    const cfg = this.ctx.getConfig().sources.mastodon;
+    const fullCfg = this.ctx.getConfig();
+    if (!fullCfg.sources.mastodon.enabled) return;
+    const cfg = fullCfg.sources.mastodon;
     const minIntervalMs = Math.max(500, Math.floor(60_000 / Math.max(1, cfg.maxItemsPerMinute)));
     const now = Date.now();
     if (now - this.lastEmitAt < minIntervalMs) {
@@ -264,6 +269,9 @@ export class MastodonSource implements TickerSource {
       }
 
       const list = (await res.json()) as MastodonApiStatus[];
+      if (!this.shouldRun || !this.ctx.getConfig().sources.mastodon.enabled) {
+        return;
+      }
       const items: TickerItem[] = [];
       for (const status of list.reverse()) {
         const item = parseMastodonStatus(status, cfg);
@@ -285,6 +293,9 @@ export class MastodonSource implements TickerSource {
         lastError: null,
       });
     } catch (err) {
+      if (!this.shouldRun || !this.ctx.getConfig().sources.mastodon.enabled) {
+        return;
+      }
       this.ctx.updateStatus({
         id: this.id,
         active: true,

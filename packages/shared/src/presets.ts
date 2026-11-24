@@ -35,7 +35,7 @@ export const DEFAULT_CONFIG: AppConfig = {
         {
           id: 'nhk-news',
           name: 'NHK',
-          url: 'https://www3.nhk.or.jp/rss/news/cat0.xml',
+          url: 'https://news.web.nhk/n-data/conf/na/rss/cat0.xml',
           enabled: true,
           color: '#38bdf8',
         },

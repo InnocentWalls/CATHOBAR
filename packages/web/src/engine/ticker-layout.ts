@@ -1,4 +1,12 @@
-import type { ChannelId, LayoutMode, ShinkansenScrollStyle, TickerItem, VisualMode } from '@cathobar/shared';
+import {
+  isItemEnabledBySources,
+  type ChannelId,
+  type LayoutMode,
+  type ShinkansenScrollStyle,
+  type SourcesConfig,
+  type TickerItem,
+  type VisualMode,
+} from '@cathobar/shared';
 
 export interface ActiveTickerSpan {
   uid: string;
@@ -83,16 +91,26 @@ export class TickerLayoutEngine {
   private danmakuSlotCursor = 0;
   private shinkansenState: ShinkansenState | null = null;
 
-  setPool(items: TickerItem[], activeChannel: ChannelId): void {
-    const filtered = filterByChannel(items, activeChannel).filter((item) => !item.oneShot);
+  setPool(items: TickerItem[], activeChannel: ChannelId, sources?: SourcesConfig): void {
+    const filtered = filterByChannel(items, activeChannel, sources).filter((item) => !item.oneShot);
     this.pool = filtered;
     if (this.poolCursor >= this.pool.length) {
       this.poolCursor = 0;
     }
+    this.priorityQueue = this.priorityQueue.filter((item) =>
+      isItemVisible(item, activeChannel, sources),
+    );
+    this.spans = this.spans.filter((span) => isItemVisible(span.item, activeChannel, sources));
+    if (
+      this.shinkansenState &&
+      !isItemVisible(this.shinkansenState.span.item, activeChannel, sources)
+    ) {
+      this.shinkansenState = null;
+    }
   }
 
-  enqueue(items: TickerItem[], activeChannel: ChannelId): void {
-    const filtered = filterByChannel(items, activeChannel);
+  enqueue(items: TickerItem[], activeChannel: ChannelId, sources?: SourcesConfig): void {
+    const filtered = filterByChannel(items, activeChannel, sources);
     for (const item of filtered) {
       if (item.priority === 'high' || item.oneShot) {
         this.priorityQueue.unshift(item);
@@ -457,8 +475,22 @@ function measureSpanWidth(
   };
 }
 
-export function filterByChannel(items: TickerItem[], activeChannel: ChannelId): TickerItem[] {
+export function isItemVisible(
+  item: TickerItem,
+  activeChannel: ChannelId,
+  sources?: SourcesConfig,
+): boolean {
+  if (activeChannel === 'clock') return false;
+  if (sources && !isItemEnabledBySources(item, sources)) return false;
+  if (activeChannel === 'all') return true;
+  return item.source === activeChannel || item.source === 'push';
+}
+
+export function filterByChannel(
+  items: TickerItem[],
+  activeChannel: ChannelId,
+  sources?: SourcesConfig,
+): TickerItem[] {
   if (activeChannel === 'clock') return [];
-  if (activeChannel === 'all') return items;
-  return items.filter((item) => item.source === activeChannel || item.source === 'push');
+  return items.filter((item) => isItemVisible(item, activeChannel, sources));
 }

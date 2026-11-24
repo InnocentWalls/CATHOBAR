@@ -70,8 +70,7 @@ export class WeatherSource implements TickerSource {
   constructor(private readonly ctx: SourceContext) {}
 
   start(): void {
-    this.syncTimer();
-    void this.refreshNow();
+    this.onConfigUpdate(this.ctx.getConfig());
   }
 
   stop(): void {
@@ -79,6 +78,7 @@ export class WeatherSource implements TickerSource {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.lastCoordKey = '';
     this.ctx.updateStatus({ id: this.id, active: false, connected: false });
   }
 
@@ -92,12 +92,13 @@ export class WeatherSource implements TickerSource {
     }
     const w = config.sources.weather;
     const coordKey = buildCoordKey(w.locations);
+    const wasStopped = !this.timer;
     const intervalChanged = this.pollIntervalSec !== w.pollIntervalSec;
-    if (intervalChanged || !this.timer) {
+    if (intervalChanged || wasStopped) {
       this.pollIntervalSec = w.pollIntervalSec;
       this.syncTimer();
     }
-    if (coordKey !== this.lastCoordKey || intervalChanged) {
+    if (wasStopped || coordKey !== this.lastCoordKey || intervalChanged) {
       void this.refreshNow();
     }
   }
@@ -139,8 +140,24 @@ export class WeatherSource implements TickerSource {
       }),
     );
 
-    if (items.length > 0) {
-      this.ctx.emitItems(items);
+    const latestConfig = this.ctx.getConfig();
+    const latestWeather = latestConfig.sources.weather;
+    const latestShouldRun =
+      latestWeather.enabled &&
+      (latestConfig.activeChannel === 'all' || latestConfig.activeChannel === 'weather');
+    if (!latestShouldRun) {
+      return;
+    }
+
+    const enabledKeys = new Set(
+      latestWeather.locations.filter((loc) => loc.enabled).map((loc) => `weather:${loc.id}`),
+    );
+    const activeItems = items.filter(
+      (item) => item.replaceKey !== undefined && enabledKeys.has(item.replaceKey),
+    );
+
+    if (activeItems.length > 0) {
+      this.ctx.emitItems(activeItems);
     }
 
     this.ctx.updateStatus({

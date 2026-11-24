@@ -3,6 +3,7 @@ import type { AppConfig, SourceStatus, TickerItem, TickerSourceId } from '@catho
 export interface SourceContext {
   getConfig: () => AppConfig;
   emitItems: (items: TickerItem[]) => void;
+  retainSourceKeyItems: (sourceKey: string, keepIds: Set<string>) => void;
   updateStatus: (partial: Partial<SourceStatus> & { id: TickerSourceId }) => void;
 }
 

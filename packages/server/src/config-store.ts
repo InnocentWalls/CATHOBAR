@@ -25,6 +25,9 @@ export class ConfigStore {
       const raw = await readFile(this.filePath, 'utf-8');
       const parsed = JSON.parse(raw) as unknown;
       this.config = this.mergeWithDefaults(parsed);
+      if (hasMigratedRssFeedUrl(parsed, this.config)) {
+        await this.save();
+      }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
       if (code === 'ENOENT') {
@@ -64,7 +67,16 @@ export class ConfigStore {
     }
     const obj = raw as Record<string, unknown>;
     const rawSources = isPlainObject(obj.sources) ? obj.sources : {};
+    const rawRss = isPlainObject(rawSources.rss) ? rawSources.rss : {};
     const rawWeather = isPlainObject(rawSources.weather) ? rawSources.weather : {};
+
+    const rssFeeds = Array.isArray(rawRss.feeds)
+      ? rawRss.feeds.map((entry) =>
+        isPlainObject(entry) && typeof entry.url === 'string'
+          ? { ...entry, url: migrateLegacyRssUrl(entry.url) }
+          : entry,
+      )
+      : DEFAULT_CONFIG.sources.rss.feeds;
 
     // Migrate legacy single-city weather config to multi-location array
     let weatherLocations = DEFAULT_CONFIG.sources.weather.locations;
@@ -102,7 +114,8 @@ export class ConfigStore {
       sources: {
         rss: {
           ...DEFAULT_CONFIG.sources.rss,
-          ...(isPlainObject(rawSources.rss) ? rawSources.rss : {}),
+          ...rawRss,
+          feeds: rssFeeds,
         },
         wikipedia: {
           ...DEFAULT_CONFIG.sources.wikipedia,
@@ -160,4 +173,23 @@ export class ConfigStore {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function migrateLegacyRssUrl(url: string): string {
+  return url.replace(
+    /^https?:\/\/www3\.nhk\.or\.jp\/rss\/news\/(cat\d+\.xml)$/i,
+    'https://news.web.nhk/n-data/conf/na/rss/$1',
+  );
+}
+
+function hasMigratedRssFeedUrl(raw: unknown, merged: AppConfig): boolean {
+  if (!isPlainObject(raw) || !isPlainObject(raw.sources) || !isPlainObject(raw.sources.rss)) {
+    return false;
+  }
+  const rawFeeds = raw.sources.rss.feeds;
+  if (!Array.isArray(rawFeeds)) return false;
+  return rawFeeds.some((entry, idx) => {
+    if (!isPlainObject(entry) || typeof entry.url !== 'string') return false;
+    return merged.sources.rss.feeds[idx]?.url !== entry.url;
+  });
 }

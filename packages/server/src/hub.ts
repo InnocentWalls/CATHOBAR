@@ -1,14 +1,15 @@
 import { networkInterfaces } from 'node:os';
 import type { WebSocket } from 'ws';
-import type {
-  ActivityBucket,
-  AppConfig,
-  PushMessageInput,
-  ServerState,
-  SourceStatus,
-  TickerItem,
-  TickerSourceId,
-  WsMessage,
+import {
+  isItemEnabledBySources,
+  type ActivityBucket,
+  type AppConfig,
+  type PushMessageInput,
+  type ServerState,
+  type SourceStatus,
+  type TickerItem,
+  type TickerSourceId,
+  type WsMessage,
 } from '@cathobar/shared';
 import { ConfigStore } from './config-store.js';
 import { MastodonSource } from './sources/mastodon.js';
@@ -47,6 +48,7 @@ export class TickerHub {
     const ctx: SourceContext = {
       getConfig: () => this.configStore.get(),
       emitItems: (newItems) => this.handleIncomingItems(newItems),
+      retainSourceKeyItems: (sourceKey, keepIds) => this.retainSourceKeyItems(sourceKey, keepIds),
       updateStatus: (partial) => this.updateStatus(partial),
     };
 
@@ -189,10 +191,12 @@ export class TickerHub {
   }
 
   private handleIncomingItems(incoming: TickerItem[]): void {
+    const config = this.configStore.get();
     const fresh: TickerItem[] = [];
     let replacedAny = false;
 
     for (const item of incoming) {
+      if (!isItemEnabledBySources(item, config.sources)) continue;
       if (!item.oneShot && this.seenIds.has(item.id)) continue;
 
       this.recordActivity(item.timestamp, 1);
@@ -248,25 +252,29 @@ export class TickerHub {
   }
 
   private pruneStaleItems(config: AppConfig): boolean {
-    const activeWeatherKeys = new Set(
-      config.sources.weather.enabled
-        ? config.sources.weather.locations
-            .filter((l) => l.enabled)
-            .map((l) => `weather:${l.id}`)
-        : [],
-    );
-
     const beforeLen = this.items.length;
     for (let i = this.items.length - 1; i >= 0; i -= 1) {
       const item = this.items[i]!;
-      if (item.source === 'weather') {
-        if (!item.replaceKey || !activeWeatherKeys.has(item.replaceKey)) {
-          this.seenIds.delete(item.id);
-          this.items.splice(i, 1);
-        }
+      if (!isItemEnabledBySources(item, config.sources)) {
+        this.seenIds.delete(item.id);
+        this.items.splice(i, 1);
       }
     }
     return this.items.length !== beforeLen;
+  }
+
+  private retainSourceKeyItems(sourceKey: string, keepIds: Set<string>): void {
+    const beforeLen = this.items.length;
+    for (let i = this.items.length - 1; i >= 0; i -= 1) {
+      const item = this.items[i]!;
+      if (item.sourceKey === sourceKey && !keepIds.has(item.id)) {
+        this.seenIds.delete(item.id);
+        this.items.splice(i, 1);
+      }
+    }
+    if (this.items.length !== beforeLen) {
+      this.broadcast({ type: 'items:sync', payload: [...this.items] });
+    }
   }
 
   private updateStatus(partial: Partial<SourceStatus> & { id: TickerSourceId }): void {

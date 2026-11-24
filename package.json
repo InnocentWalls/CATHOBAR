@@ -12,7 +12,8 @@
     "start": "npm run start -w @cathobar/server",
     "typecheck": "npm run typecheck -w @cathobar/shared && npm run typecheck -w @cathobar/server && npm run typecheck -w @cathobar/web",
     "test": "vitest run",
-    "preview:win": "powershell -ExecutionPolicy Bypass -File scripts/launch-window.ps1"
+    "preview:win": "powershell -ExecutionPolicy Bypass -File scripts/launch-window.ps1",
+    "start:win": "powershell -ExecutionPolicy Bypass -File scripts/launch-app.ps1"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

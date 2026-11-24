@@ -66,6 +66,7 @@ export function parseRssXml(xml: string, feed: RssFeedConfig): TickerItem[] {
         timestamp: now,
         priority: 'normal' as const,
         oneShot: false,
+        sourceKey: `rss:${feed.id}`,
         url,
       };
     }).filter((x) => x.text.length > 0);
@@ -86,6 +87,7 @@ export function parseRssXml(xml: string, feed: RssFeedConfig): TickerItem[] {
         timestamp: now,
         priority: 'normal' as const,
         oneShot: false,
+        sourceKey: `rss:${feed.id}`,
         url,
       };
     }).filter((x) => x.text.length > 0);
@@ -106,6 +108,7 @@ export function parseRssXml(xml: string, feed: RssFeedConfig): TickerItem[] {
         timestamp: now,
         priority: 'normal' as const,
         oneShot: false,
+        sourceKey: `rss:${feed.id}`,
         url,
       };
     }).filter((x) => x.text.length > 0);
@@ -117,14 +120,13 @@ export function parseRssXml(xml: string, feed: RssFeedConfig): TickerItem[] {
 export class RssSource implements TickerSource {
   readonly id = 'rss' as const;
   private timer: ReturnType<typeof setInterval> | null = null;
-  private seenIds = new Set<string>();
+  private seenIdsByFeed = new Map<string, Set<string>>();
   private pollIntervalSec = 300;
 
-  constructor(private readonly ctx: SourceContext) {}
+  constructor(private readonly ctx: SourceContext) { }
 
   start(): void {
-    this.syncTimer();
-    void this.refreshNow();
+    this.onConfigUpdate(this.ctx.getConfig());
   }
 
   stop(): void {
@@ -132,10 +134,20 @@ export class RssSource implements TickerSource {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.seenIdsByFeed.clear();
     this.ctx.updateStatus({ id: this.id, active: false, connected: false });
   }
 
   onConfigUpdate(config: AppConfig): void {
+    const enabledFeedIds = new Set(
+      config.sources.rss.feeds.filter((f) => f.enabled).map((f) => f.id),
+    );
+    for (const feedId of this.seenIdsByFeed.keys()) {
+      if (!enabledFeedIds.has(feedId)) {
+        this.seenIdsByFeed.delete(feedId);
+      }
+    }
+
     const shouldRun =
       config.sources.rss.enabled &&
       (config.activeChannel === 'all' || config.activeChannel === 'rss');
@@ -172,7 +184,7 @@ export class RssSource implements TickerSource {
     }
 
     this.ctx.updateStatus({ id: this.id, active: true });
-    const collected: TickerItem[] = [];
+    const perFeedResults: Array<{ feedId: string; items: TickerItem[] }> = [];
     const errors: string[] = [];
 
     await Promise.all(
@@ -187,21 +199,37 @@ export class RssSource implements TickerSource {
           }
           const xml = await res.text();
           const items = parseRssXml(xml, feed);
-          for (const item of items) {
-            if (!this.seenIds.has(item.id)) {
-              this.seenIds.add(item.id);
-              collected.push(item);
-            }
-          }
+          perFeedResults.push({ feedId: feed.id, items });
         } catch (err) {
           errors.push(`${feed.name}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }),
     );
 
-    if (this.seenIds.size > 1000) {
-      const trimmed = Array.from(this.seenIds).slice(-500);
-      this.seenIds = new Set(trimmed);
+    const latestConfig = this.ctx.getConfig();
+    const latestShouldRun =
+      latestConfig.sources.rss.enabled &&
+      (latestConfig.activeChannel === 'all' || latestConfig.activeChannel === 'rss');
+    if (!latestShouldRun) {
+      return;
+    }
+
+    const latestEnabledFeedIds = new Set(
+      latestConfig.sources.rss.feeds.filter((f) => f.enabled).map((f) => f.id),
+    );
+    const collected: TickerItem[] = [];
+    for (const { feedId, items } of perFeedResults) {
+      if (!latestEnabledFeedIds.has(feedId)) continue;
+      if (items.length === 0) continue;
+      const currentIds = new Set(items.map((item) => item.id));
+      this.ctx.retainSourceKeyItems(`rss:${feedId}`, currentIds);
+      const prevSeen = this.seenIdsByFeed.get(feedId) ?? new Set<string>();
+      for (const item of items) {
+        if (!prevSeen.has(item.id)) {
+          collected.push(item);
+        }
+      }
+      this.seenIdsByFeed.set(feedId, currentIds);
     }
 
     if (collected.length > 0) {

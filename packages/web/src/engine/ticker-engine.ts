@@ -1,4 +1,9 @@
-import type { ActivityBucket, AppConfig, TickerItem } from '@cathobar/shared';
+import {
+  isItemEnabledBySources,
+  type ActivityBucket,
+  type AppConfig,
+  type TickerItem,
+} from '@cathobar/shared';
 import { Renderer2D } from './renderer-2d.js';
 import { RendererGL } from './renderer-gl.js';
 import { computeLogicalSize, TickerLayoutEngine } from './ticker-layout.js';
@@ -56,7 +61,7 @@ export class TickerEngine {
     this.config = config;
     this.activity = activity;
     this.updateWeatherCache(items);
-    this.layout.setPool(items, config.activeChannel);
+    this.layout.setPool(items, config.activeChannel, config.sources);
     if (channelChanged || modeChanged) {
       this.layout.clearActive();
     }
@@ -64,7 +69,7 @@ export class TickerEngine {
 
   pushItems(items: TickerItem[]): void {
     this.updateWeatherCache(items, true);
-    this.layout.enqueue(items, this.config.activeChannel);
+    this.layout.enqueue(items, this.config.activeChannel, this.config.sources);
   }
 
   updateActivity(activity: ActivityBucket[]): void {
@@ -201,11 +206,13 @@ export class TickerEngine {
     const map = new Map<string, TickerItem>();
     if (merge) {
       for (const existing of this.latestWeathers) {
-        map.set(existing.replaceKey ?? existing.id, existing);
+        if (isItemEnabledBySources(existing, this.config.sources)) {
+          map.set(existing.replaceKey ?? existing.id, existing);
+        }
       }
     }
     for (const item of items) {
-      if (item.source === 'weather') {
+      if (item.source === 'weather' && isItemEnabledBySources(item, this.config.sources)) {
         map.set(item.replaceKey ?? item.id, item);
       }
     }
