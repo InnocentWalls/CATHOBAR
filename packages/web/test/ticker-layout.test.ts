@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, type TickerItem } from '@cathobar/shared';
+import { resolveItemIcon } from '../src/engine/pixel-icons.js';
 import {
+  computeEffectiveChannel,
   computeEdgeAlpha,
   computeLogicalSize,
   TickerLayoutEngine,
@@ -45,6 +47,7 @@ describe('TickerLayoutEngine', () => {
     timestamp: 1000,
     priority: opts.priority ?? 'normal',
     oneShot: opts.oneShot ?? false,
+    breaking: false,
   });
 
   it('places items across lanes without overlapping and measures bold badge widths', () => {
@@ -336,5 +339,94 @@ describe('TickerLayoutEngine', () => {
     expect(spans.some((s) => s.item.id === 'w-off')).toBe(false);
     expect(spans.some((s) => s.item.id === 'it1')).toBe(true);
     expect(spans.some((s) => s.item.id === 'push1')).toBe(true);
+  });
+
+  it('distributes ALL MIX items by Smooth Weighted Round-Robin and excludes weight 0', () => {
+    const engine = new TickerLayoutEngine();
+    engine.setPool(
+      [
+        makeItem('r1', 'RSS News', { source: 'rss' }),
+        makeItem('w1', 'Wiki Fact', { source: 'wikipedia' }),
+        makeItem('m1', 'Mastodon Note', { source: 'mastodon' }),
+      ],
+      'all',
+      undefined,
+      { rss: 3, wikipedia: 1, mastodon: 0 },
+    );
+
+    const pickedSources: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const spans = engine.step({
+        dtSec: 0.016,
+        tickerWidth: 50,
+        tickerHeight: 82,
+        logicalHeight: 96,
+        lanes: 1,
+        layoutMode: 'lanes',
+        visualMode: 'anobar8-vfd',
+        shinkansenStyle: 'scroll',
+        activeChannel: 'all',
+        scrollSpeed: 5000,
+        showBadge: true,
+        showPixelIcons: true,
+        measureText: measure,
+      });
+      if (spans[0]) {
+        pickedSources.push(spans[0].item.source);
+        expect(spans[0].iconWidth).toBeGreaterThan(0);
+      }
+      engine.step({
+        dtSec: 0.5,
+        tickerWidth: 50,
+        tickerHeight: 82,
+        logicalHeight: 96,
+        lanes: 1,
+        layoutMode: 'lanes',
+        visualMode: 'anobar8-vfd',
+        shinkansenStyle: 'scroll',
+        activeChannel: 'all',
+        scrollSpeed: 5000,
+        showBadge: true,
+        showPixelIcons: true,
+        measureText: measure,
+      });
+    }
+
+    expect(pickedSources).not.toContain('mastodon');
+    expect(pickedSources.filter((s) => s === 'rss')).toHaveLength(3);
+    expect(pickedSources.filter((s) => s === 'wikipedia')).toHaveLength(1);
+  });
+});
+
+describe('computeEffectiveChannel & resolveItemIcon', () => {
+  it('rotates channels deterministically without mutating config', () => {
+    const cfg = {
+      activeChannel: 'all' as const,
+      rotation: {
+        enabled: true,
+        intervalSec: 30,
+        channels: ['rss', 'weather', 'market'] as typeof DEFAULT_CONFIG.rotation.channels,
+      },
+    };
+    expect(computeEffectiveChannel(cfg, 0).channel).toBe('rss');
+    expect(computeEffectiveChannel(cfg, 30_000).channel).toBe('weather');
+    expect(computeEffectiveChannel(cfg, 60_000).channel).toBe('market');
+    expect(computeEffectiveChannel(cfg, 90_000).channel).toBe('rss');
+  });
+
+  it('resolves sensible fallback pixel icons by source', () => {
+    expect(
+      resolveItemIcon({
+        id: '1',
+        source: 'earthquake',
+        badge: '地震',
+        text: 'テスト',
+        color: '#fff',
+        timestamp: 1,
+        priority: 'normal',
+        oneShot: false,
+        breaking: false,
+      }),
+    ).toBe('quake');
   });
 });

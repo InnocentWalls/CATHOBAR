@@ -1,4 +1,10 @@
-import type { AppConfig, TickerItem, WeatherLocation } from '@cathobar/shared';
+import {
+  isChannelActiveInConfig,
+  type AppConfig,
+  type PixelIconId,
+  type TickerItem,
+  type WeatherLocation,
+} from '@cathobar/shared';
 import type { SourceContext, TickerSource } from './types.js';
 
 interface OpenMeteoResponse {
@@ -14,6 +20,46 @@ interface OpenMeteoResponse {
     temperature_2m_max?: number[];
     temperature_2m_min?: number[];
   };
+}
+
+export function wmoCodeToIcon(code: number | undefined): PixelIconId {
+  switch (code) {
+    case 0:
+    case 1:
+      return 'sun';
+    case 2:
+      return 'partly-cloudy';
+    case 3:
+      return 'cloud';
+    case 45:
+    case 48:
+      return 'fog';
+    case 51:
+    case 53:
+    case 55:
+    case 61:
+    case 63:
+    case 65:
+    case 66:
+    case 67:
+    case 80:
+    case 81:
+    case 82:
+      return 'rain';
+    case 71:
+    case 73:
+    case 75:
+    case 77:
+    case 85:
+    case 86:
+      return 'snow';
+    case 95:
+    case 96:
+    case 99:
+      return 'thunder';
+    default:
+      return 'cloud';
+  }
 }
 
 export function describeWmoCode(code: number | undefined): string {
@@ -70,7 +116,8 @@ export class WeatherSource implements TickerSource {
   constructor(private readonly ctx: SourceContext) {}
 
   start(): void {
-    this.onConfigUpdate(this.ctx.getConfig());
+    this.syncTimer();
+    void this.refreshNow();
   }
 
   stop(): void {
@@ -78,27 +125,24 @@ export class WeatherSource implements TickerSource {
       clearInterval(this.timer);
       this.timer = null;
     }
-    this.lastCoordKey = '';
     this.ctx.updateStatus({ id: this.id, active: false, connected: false });
   }
 
   onConfigUpdate(config: AppConfig): void {
     const shouldRun =
-      config.sources.weather.enabled &&
-      (config.activeChannel === 'all' || config.activeChannel === 'weather');
+      config.sources.weather.enabled && isChannelActiveInConfig(config, 'weather');
     if (!shouldRun) {
       this.stop();
       return;
     }
     const w = config.sources.weather;
     const coordKey = buildCoordKey(w.locations);
-    const wasStopped = !this.timer;
     const intervalChanged = this.pollIntervalSec !== w.pollIntervalSec;
-    if (intervalChanged || wasStopped) {
+    if (intervalChanged || !this.timer) {
       this.pollIntervalSec = w.pollIntervalSec;
       this.syncTimer();
     }
-    if (wasStopped || coordKey !== this.lastCoordKey || intervalChanged) {
+    if (coordKey !== this.lastCoordKey || intervalChanged) {
       void this.refreshNow();
     }
   }
@@ -106,8 +150,7 @@ export class WeatherSource implements TickerSource {
   async refreshNow(): Promise<void> {
     const config = this.ctx.getConfig();
     const w = config.sources.weather;
-    const shouldRun =
-      w.enabled && (config.activeChannel === 'all' || config.activeChannel === 'weather');
+    const shouldRun = w.enabled && isChannelActiveInConfig(config, 'weather');
     if (!shouldRun) {
       this.ctx.updateStatus({ id: this.id, active: false, connected: false });
       return;
@@ -140,24 +183,8 @@ export class WeatherSource implements TickerSource {
       }),
     );
 
-    const latestConfig = this.ctx.getConfig();
-    const latestWeather = latestConfig.sources.weather;
-    const latestShouldRun =
-      latestWeather.enabled &&
-      (latestConfig.activeChannel === 'all' || latestConfig.activeChannel === 'weather');
-    if (!latestShouldRun) {
-      return;
-    }
-
-    const enabledKeys = new Set(
-      latestWeather.locations.filter((loc) => loc.enabled).map((loc) => `weather:${loc.id}`),
-    );
-    const activeItems = items.filter(
-      (item) => item.replaceKey !== undefined && enabledKeys.has(item.replaceKey),
-    );
-
-    if (activeItems.length > 0) {
-      this.ctx.emitItems(activeItems);
+    if (items.length > 0) {
+      this.ctx.emitItems(items);
     }
 
     this.ctx.updateStatus({
@@ -221,7 +248,10 @@ export class WeatherSource implements TickerSource {
       timestamp: now,
       priority: 'normal',
       oneShot: false,
+      breaking: false,
+      icon: wmoCodeToIcon(cur?.weather_code ?? daily?.weather_code?.[0]),
       replaceKey: `weather:${loc.id}`,
+      sourceKey: `weather:${loc.id}`,
     };
   }
 

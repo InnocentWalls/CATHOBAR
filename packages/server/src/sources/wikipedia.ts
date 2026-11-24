@@ -1,4 +1,4 @@
-import type { AppConfig, TickerItem } from '@cathobar/shared';
+import { isChannelActiveInConfig, type AppConfig, type TickerItem } from '@cathobar/shared';
 import { cleanText, type SourceContext, type TickerSource } from './types.js';
 
 interface WikiSummaryResponse {
@@ -86,6 +86,8 @@ export class WikipediaSource implements TickerSource {
           timestamp: Date.now(),
           priority: 'normal',
           oneShot: false,
+          breaking: false,
+          icon: 'wiki',
           url: data.content_urls?.desktop?.page,
         };
         this.ctx.emitItems([item]);
@@ -112,10 +114,7 @@ export class WikipediaSource implements TickerSource {
   }
 
   private isConfigActive(config: AppConfig): boolean {
-    return (
-      config.sources.wikipedia.enabled &&
-      (config.activeChannel === 'all' || config.activeChannel === 'wikipedia')
-    );
+    return config.sources.wikipedia.enabled && isChannelActiveInConfig(config, 'wikipedia');
   }
 
   private syncTimer(): void {

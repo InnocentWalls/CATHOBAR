@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 import { XMLParser } from 'fast-xml-parser';
-import type { AppConfig, RssFeedConfig, TickerItem } from '@cathobar/shared';
+import {
+  isChannelActiveInConfig,
+  type AppConfig,
+  type RssFeedConfig,
+  type TickerItem,
+} from '@cathobar/shared';
 import { cleanText, type SourceContext, type TickerSource } from './types.js';
 
 const xmlParser = new XMLParser({
@@ -53,65 +58,80 @@ export function parseRssXml(xml: string, feed: RssFeedConfig): TickerItem[] {
     | Record<string, unknown>
     | undefined;
   if (rssChannel) {
-    return toArray(rssChannel.item as Record<string, unknown>[]).slice(0, 12).map((item) => {
-      const title = cleanText(extractText(item.title));
-      const url = extractLink(item.link);
-      const id = createHash('sha1').update(`${feed.id}:${url ?? title}`).digest('hex').slice(0, 16);
-      return {
-        id: `rss-${id}`,
-        source: 'rss' as const,
-        badge: feed.name,
-        text: title,
-        color,
-        timestamp: now,
-        priority: 'normal' as const,
-        oneShot: false,
-        sourceKey: `rss:${feed.id}`,
-        url,
-      };
-    }).filter((x) => x.text.length > 0);
+    return toArray(rssChannel.item as Record<string, unknown>[])
+      .slice(0, 12)
+      .map((item) => {
+        const title = cleanText(extractText(item.title));
+        const url = extractLink(item.link);
+        const id = createHash('sha1').update(`${feed.id}:${url ?? title}`).digest('hex').slice(0, 16);
+        return {
+          id: `rss-${id}`,
+          source: 'rss' as const,
+          badge: feed.name,
+          text: title,
+          color,
+          timestamp: now,
+          priority: 'normal' as const,
+          oneShot: false,
+          breaking: false,
+          icon: 'news' as const,
+          sourceKey: `rss:${feed.id}`,
+          url,
+        };
+      })
+      .filter((x) => x.text.length > 0);
   }
 
   const atomFeed = parsed.feed as Record<string, unknown> | undefined;
   if (atomFeed) {
-    return toArray(atomFeed.entry as Record<string, unknown>[]).slice(0, 12).map((entry) => {
-      const title = cleanText(extractText(entry.title));
-      const url = extractLink(entry.link);
-      const id = createHash('sha1').update(`${feed.id}:${url ?? title}`).digest('hex').slice(0, 16);
-      return {
-        id: `rss-${id}`,
-        source: 'rss' as const,
-        badge: feed.name,
-        text: title,
-        color,
-        timestamp: now,
-        priority: 'normal' as const,
-        oneShot: false,
-        sourceKey: `rss:${feed.id}`,
-        url,
-      };
-    }).filter((x) => x.text.length > 0);
+    return toArray(atomFeed.entry as Record<string, unknown>[])
+      .slice(0, 12)
+      .map((entry) => {
+        const title = cleanText(extractText(entry.title));
+        const url = extractLink(entry.link);
+        const id = createHash('sha1').update(`${feed.id}:${url ?? title}`).digest('hex').slice(0, 16);
+        return {
+          id: `rss-${id}`,
+          source: 'rss' as const,
+          badge: feed.name,
+          text: title,
+          color,
+          timestamp: now,
+          priority: 'normal' as const,
+          oneShot: false,
+          breaking: false,
+          icon: 'news' as const,
+          sourceKey: `rss:${feed.id}`,
+          url,
+        };
+      })
+      .filter((x) => x.text.length > 0);
   }
 
   const rdf = parsed['rdf:RDF'] as Record<string, unknown> | undefined;
   if (rdf) {
-    return toArray(rdf.item as Record<string, unknown>[]).slice(0, 12).map((item) => {
-      const title = cleanText(extractText(item.title));
-      const url = extractLink(item.link);
-      const id = createHash('sha1').update(`${feed.id}:${url ?? title}`).digest('hex').slice(0, 16);
-      return {
-        id: `rss-${id}`,
-        source: 'rss' as const,
-        badge: feed.name,
-        text: title,
-        color,
-        timestamp: now,
-        priority: 'normal' as const,
-        oneShot: false,
-        sourceKey: `rss:${feed.id}`,
-        url,
-      };
-    }).filter((x) => x.text.length > 0);
+    return toArray(rdf.item as Record<string, unknown>[])
+      .slice(0, 12)
+      .map((item) => {
+        const title = cleanText(extractText(item.title));
+        const url = extractLink(item.link);
+        const id = createHash('sha1').update(`${feed.id}:${url ?? title}`).digest('hex').slice(0, 16);
+        return {
+          id: `rss-${id}`,
+          source: 'rss' as const,
+          badge: feed.name,
+          text: title,
+          color,
+          timestamp: now,
+          priority: 'normal' as const,
+          oneShot: false,
+          breaking: false,
+          icon: 'news' as const,
+          sourceKey: `rss:${feed.id}`,
+          url,
+        };
+      })
+      .filter((x) => x.text.length > 0);
   }
 
   return [];
@@ -123,10 +143,11 @@ export class RssSource implements TickerSource {
   private seenIdsByFeed = new Map<string, Set<string>>();
   private pollIntervalSec = 300;
 
-  constructor(private readonly ctx: SourceContext) { }
+  constructor(private readonly ctx: SourceContext) {}
 
   start(): void {
-    this.onConfigUpdate(this.ctx.getConfig());
+    this.syncTimer();
+    void this.refreshNow();
   }
 
   stop(): void {
@@ -149,8 +170,7 @@ export class RssSource implements TickerSource {
     }
 
     const shouldRun =
-      config.sources.rss.enabled &&
-      (config.activeChannel === 'all' || config.activeChannel === 'rss');
+      config.sources.rss.enabled && isChannelActiveInConfig(config, 'rss');
     if (!shouldRun) {
       this.stop();
       return;
@@ -165,8 +185,7 @@ export class RssSource implements TickerSource {
   async refreshNow(): Promise<void> {
     const config = this.ctx.getConfig();
     const shouldRun =
-      config.sources.rss.enabled &&
-      (config.activeChannel === 'all' || config.activeChannel === 'rss');
+      config.sources.rss.enabled && isChannelActiveInConfig(config, 'rss');
     if (!shouldRun) {
       this.ctx.updateStatus({ id: this.id, active: false, connected: false });
       return;
@@ -208,8 +227,7 @@ export class RssSource implements TickerSource {
 
     const latestConfig = this.ctx.getConfig();
     const latestShouldRun =
-      latestConfig.sources.rss.enabled &&
-      (latestConfig.activeChannel === 'all' || latestConfig.activeChannel === 'rss');
+      latestConfig.sources.rss.enabled && isChannelActiveInConfig(latestConfig, 'rss');
     if (!latestShouldRun) {
       return;
     }

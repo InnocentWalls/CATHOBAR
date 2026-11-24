@@ -3,6 +3,8 @@ import {
   DEFAULT_CONFIG,
   type ActivityBucket,
   type AppConfig,
+  type NowPlayingPushInput,
+  type NowPlayingState,
   type PartialAppConfig,
   type PushMessageInput,
   type SourceStatus,
@@ -19,8 +21,10 @@ export interface CathobarHookResult {
   activity: ActivityBucket[];
   statuses: SourceStatus[];
   lanUrls: string[];
+  nowPlaying: NowPlayingState | null;
   updateConfig: (patch: PartialAppConfig) => Promise<void>;
   pushMessage: (input: PushMessageInput) => Promise<void>;
+  pushNowPlaying: (input: NowPlayingPushInput) => Promise<void>;
   refreshSource: (id: TickerSourceId) => Promise<void>;
 }
 
@@ -32,6 +36,7 @@ export function useCathobar(): CathobarHookResult {
   const [activity, setActivity] = useState<ActivityBucket[]>([]);
   const [statuses, setStatuses] = useState<SourceStatus[]>([]);
   const [lanUrls, setLanUrls] = useState<string[]>([]);
+  const [nowPlaying, setNowPlaying] = useState<NowPlayingState | null>(null);
   const reconnectTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -62,6 +67,7 @@ export function useCathobar(): CathobarHookResult {
               setActivity(msg.payload.activity);
               setStatuses(msg.payload.statuses);
               setLanUrls(msg.payload.lanUrls);
+              setNowPlaying(msg.payload.nowPlaying ?? null);
               break;
             case 'config:update':
               setConfig(msg.payload);
@@ -89,6 +95,9 @@ export function useCathobar(): CathobarHookResult {
               break;
             case 'status:update':
               setStatuses(msg.payload);
+              break;
+            case 'nowplaying:update':
+              setNowPlaying(msg.payload);
               break;
           }
         } catch {
@@ -140,6 +149,14 @@ export function useCathobar(): CathobarHookResult {
     });
   }, []);
 
+  const pushNowPlaying = useCallback(async (input: NowPlayingPushInput) => {
+    await fetch('/api/now-playing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  }, []);
+
   const refreshSource = useCallback(async (id: TickerSourceId) => {
     await fetch(`/api/sources/${id}/refresh`, { method: 'POST' });
   }, []);
@@ -152,8 +169,10 @@ export function useCathobar(): CathobarHookResult {
     activity,
     statuses,
     lanUrls,
+    nowPlaying,
     updateConfig,
     pushMessage,
+    pushNowPlaying,
     refreshSource,
   };
 }

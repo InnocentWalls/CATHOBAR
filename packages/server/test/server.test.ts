@@ -6,8 +6,12 @@ import { DEFAULT_CONFIG } from '@cathobar/shared';
 import { createApp } from '../src/app.js';
 import { ConfigStore } from '../src/config-store.js';
 import { TickerHub } from '../src/hub.js';
+import { formatCountdownEvent } from '../src/sources/countdown.js';
+import { parseP2pQuakeEvent } from '../src/sources/earthquake.js';
+import { formatMarketQuote } from '../src/sources/market.js';
 import { parseMastodonStatus } from '../src/sources/mastodon.js';
 import { parseRssXml } from '../src/sources/rss.js';
+import { parseOdptTrainInfo } from '../src/sources/transit.js';
 
 const tempDirs: string[] = [];
 
@@ -359,5 +363,192 @@ describe('TickerHub ALL MIX source filtering', () => {
     generation = 2;
     await hub.refreshSource('rss');
     expect(hub.getState().items.map((i) => i.text)).toEqual(['継続記事B', '最新記事C']);
+  });
+});
+
+describe('New sources & global filtering & webhooks', () => {
+  it('parses P2PQuake 551/552/556 events with live vs history breaking flags', () => {
+    const cfg = DEFAULT_CONFIG.sources.earthquake;
+    const minor = parseP2pQuakeEvent(
+      { code: 551, id: 'q1', earthquake: { maxScale: 10, hypocenter: { name: '千葉県北西部' } } },
+      cfg,
+      true,
+    );
+    expect(minor).toBeNull();
+
+    const majorHistory = parseP2pQuakeEvent(
+      {
+        code: 551,
+        id: 'q2',
+        earthquake: {
+          maxScale: 50,
+          domesticTsunami: 'None',
+          hypocenter: { name: '宮城県沖', depth: 40, magnitude: 6.1 },
+        },
+      },
+      cfg,
+      false,
+    );
+    expect(majorHistory).not.toBeNull();
+    expect(majorHistory?.breaking).toBe(false);
+    expect(majorHistory?.icon).toBe('quake');
+
+    const majorLive = parseP2pQuakeEvent(
+      {
+        code: 551,
+        id: 'q3',
+        earthquake: {
+          maxScale: 50,
+          domesticTsunami: 'Warning',
+          hypocenter: { name: '三陸沖', depth: 20, magnitude: 7.2 },
+        },
+      },
+      cfg,
+      true,
+    );
+    expect(majorLive?.breaking).toBe(true);
+    expect(majorLive?.icon).toBe('tsunami');
+
+    const eewLive = parseP2pQuakeEvent(
+      {
+        code: 556,
+        id: 'eew1',
+        earthquake: { hypocenter: { name: '茨城沖' } },
+        areas: [{ pref: '茨城県' }, { pref: '東京都' }],
+      },
+      cfg,
+      true,
+    );
+    expect(eewLive?.breaking).toBe(true);
+    expect(eewLive?.icon).toBe('alert');
+  });
+
+  it('parses ODPT train info with onlyProblems, lineFilter, and breakingOnSuspension', () => {
+    const sample = [
+      {
+        'odpt:railway': 'odpt.Railway:Toei.Asakusa',
+        'odpt:trainInformationText': { ja: '現在、１５分以上の遅延はありません。' },
+      },
+      {
+        'odpt:railway': 'odpt.Railway:JR-East.Yamanote',
+        'odpt:trainInformationText': { ja: '人身事故の影響で運転見合わせとなっています。' },
+      },
+    ];
+
+    const cfg = {
+      ...DEFAULT_CONFIG.sources.transit,
+      onlyProblems: true,
+      breakingOnSuspension: true,
+    };
+    const { items, suspendedKeys } = parseOdptTrainInfo(sample, cfg, new Set());
+    expect(items).toHaveLength(1);
+    expect(items[0]?.badge).toBe('運行:JR山手線');
+    expect(items[0]?.breaking).toBe(true);
+    expect(items[0]?.icon).toBe('train-alert');
+    expect(suspendedKeys.size).toBe(1);
+
+    const filtered = parseOdptTrainInfo(sample, {
+      ...DEFAULT_CONFIG.sources.transit,
+      lineFilter: ['浅草線'],
+    });
+    expect(filtered.items).toHaveLength(1);
+    expect(filtered.items[0]?.badge).toBe('運行:都営浅草線');
+    expect(filtered.items[0]?.icon).toBe('train');
+  });
+
+  it('formats market quotes and countdown events', () => {
+    const up = formatMarketQuote(
+      { id: 'usdjpy', symbol: 'USDJPY=X', label: 'USD/JPY', enabled: true },
+      155.5,
+      154.0,
+      'JPY',
+    );
+    expect(up.icon).toBe('market-up');
+    expect(up.text).toContain('▲+0.97%');
+
+    const now = Date.now();
+    const triggered = new Set<string>();
+    const active = formatCountdownEvent(
+      {
+        id: 'c1',
+        title: 'リリース',
+        targetIso: new Date(now + 90 * 60_000).toISOString(),
+        enabled: true,
+        alertOnComplete: true,
+      },
+      now,
+      triggered,
+    );
+    expect(active).toHaveLength(1);
+    expect(active[0]?.icon).toBe('timer');
+
+    const completed = formatCountdownEvent(
+      {
+        id: 'c2',
+        title: '定時',
+        targetIso: new Date(now - 5_000).toISOString(),
+        enabled: true,
+        alertOnComplete: true,
+      },
+      now,
+      triggered,
+    );
+    expect(completed.some((i) => i.breaking)).toBe(true);
+  });
+
+  it('enforces global muteKeywords, dedupeTitles, and handles /api/now-playing & /api/webhook/:preset', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cathobar-v2-api-'));
+    tempDirs.push(dir);
+
+    const store = new ConfigStore(join(dir, 'config.json'));
+    const hub = new TickerHub(store);
+    await hub.init();
+    const app = createApp(hub);
+
+    await hub.updateConfig({
+      filtering: {
+        muteKeywords: ['PR', '/広告|宣伝/i'],
+        dedupeTitles: true,
+      },
+      sources: {
+        webhook: { enabled: true, secret: 'topsecret' },
+      },
+    });
+
+    // Unauthorized webhook rejected
+    const unauth = await app.request('/api/webhook/generic', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(unauth.status).toBe(401);
+
+    // Muted webhook (non-breaking) filtered out from persistent items
+    const muted = await app.request('/api/webhook/generic', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-cathobar-token': 'topsecret' },
+      body: JSON.stringify({ badge: 'BOT', text: '本日の広告プロモーションです', oneShot: false }),
+    });
+    expect(muted.status).toBe(201);
+    expect(hub.getState().items.some((i) => i.text.includes('広告'))).toBe(false);
+
+    // Breaking alert bypasses muteKeywords
+    const alertRes = await app.request('/api/webhook/alert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer topsecret' },
+      body: JSON.stringify({ badge: 'ALERT', text: 'PRサーバ異常検知', oneShot: false }),
+    });
+    expect(alertRes.status).toBe(201);
+    expect(hub.getState().items.some((i) => i.text === 'PRサーバ異常検知')).toBe(true);
+
+    // Now Playing endpoint updates ServerState.nowPlaying
+    const npRes = await app.request('/api/now-playing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playing: true, title: 'Moonlight', artist: 'Test Band' }),
+    });
+    expect(npRes.status).toBe(201);
+    expect(hub.getState().nowPlaying?.title).toBe('Moonlight');
+    expect(hub.getState().items.some((i) => i.source === 'nowplaying')).toBe(true);
   });
 });

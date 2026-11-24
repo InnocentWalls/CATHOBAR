@@ -4,7 +4,11 @@ import { extname, resolve, sep } from 'node:path';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { ZodError } from 'zod';
-import { PushMessageInputSchema, TickerSourceIdSchema } from '@cathobar/shared';
+import {
+  NowPlayingPushInputSchema,
+  PushMessageInputSchema,
+  TickerSourceIdSchema,
+} from '@cathobar/shared';
 import type { TickerHub } from './hub.js';
 
 const MIME_TYPES: Record<string, string> = {
@@ -66,6 +70,52 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
       if (err instanceof ZodError) {
         return c.json({ error: 'Invalid push payload', issues: err.issues }, 400);
       }
+      return c.json({ error: 'Failed to parse JSON body' }, 400);
+    }
+  });
+
+  app.post('/api/now-playing', async (c) => {
+    try {
+      const body = await c.req.json();
+      const parsed = NowPlayingPushInputSchema.parse(body);
+      const state = hub.pushNowPlaying(parsed);
+      return c.json({ ok: true, nowPlaying: state }, 201);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        return c.json({ error: 'Invalid now-playing payload', issues: err.issues }, 400);
+      }
+      return c.json({ error: 'Failed to parse JSON body' }, 400);
+    }
+  });
+
+  app.post('/api/webhook/:preset', async (c) => {
+    const whCfg = hub.getConfig().sources.webhook;
+    if (!whCfg.enabled) {
+      return c.json({ error: 'Webhook source is disabled' }, 403);
+    }
+
+    if (whCfg.secret.trim()) {
+      const expected = whCfg.secret.trim();
+      const auth = c.req.header('authorization') ?? '';
+      const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+      const headerToken = c.req.header('x-cathobar-token')?.trim() ?? '';
+      const queryToken = c.req.query('token')?.trim() ?? '';
+      if (bearer !== expected && headerToken !== expected && queryToken !== expected) {
+        return c.json({ error: 'Unauthorized webhook token' }, 401);
+      }
+    }
+
+    try {
+      const preset = c.req.param('preset');
+      const body = await c.req.json();
+      const item = hub.pushWebhook(preset, body, {
+        'x-github-event': c.req.header('x-github-event'),
+      });
+      if (!item) {
+        return c.json({ error: 'Could not extract message from webhook payload' }, 400);
+      }
+      return c.json({ ok: true, item }, 201);
+    } catch {
       return c.json({ error: 'Failed to parse JSON body' }, 400);
     }
   });

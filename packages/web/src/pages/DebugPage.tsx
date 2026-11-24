@@ -12,13 +12,13 @@ import {
   type VfdPalette,
   type VisualMode,
 } from '@cathobar/shared';
-import { Flame, SlidersHorizontal, Sparkles, Tv } from 'lucide-react';
+import { AlertTriangle, Flame, SlidersHorizontal, Sparkles, Tv } from 'lucide-react';
 import { TickerCanvas } from '../components/TickerCanvas.js';
 import type { EngineStats } from '../engine/ticker-engine.js';
 import { useCathobar } from '../hooks/useCathobar.js';
 
 export function DebugPage() {
-  const { connected, config, items, lastBatch, activity, updateConfig, pushMessage } =
+  const { connected, config, items, lastBatch, activity, nowPlaying, updateConfig, pushMessage } =
     useCathobar();
 
   const [simWidth, setSimWidth] = useState(1920);
@@ -51,16 +51,30 @@ export function DebugPage() {
         badge: 'TEST',
         text: 'CATHOBAR テスト配信（1回のみ表示）: 画面を通過すると自動で消えます',
         color: '#38fad9',
+        icon: 'info' as const,
       },
       {
         badge: 'INFO',
-        text: `解像度テスト ${simWidth}×${simHeight} (Aspect ${aspect}:1) — 任意のアスペクト比に対応`,
+        text: `解像度テスト ${simWidth}×${simHeight} (Aspect ${aspect}:1) — ドット絵アイコン＆VFD質感検証`,
         color: '#f472b6',
+        icon: 'sun' as const,
       },
     ];
     for (const s of samples) {
-      await pushMessage({ ...s, priority: 'high', oneShot: true });
+      await pushMessage({ ...s, priority: 'high', oneShot: true, breaking: false });
     }
+  };
+
+  const sendBreakingAlertTest = async () => {
+    await pushMessage({
+      badge: '緊急速報',
+      text: '【テスト】緊急割り込み演出（Breaking Alert）— 全画面フラッシュ＋優先表示テスト',
+      color: '#ff2a22',
+      priority: 'high',
+      oneShot: true,
+      breaking: true,
+      icon: 'alert',
+    });
   };
 
   const sendDanmakuBurst = async () => {
@@ -68,7 +82,7 @@ export function DebugPage() {
       'ｷﾀ━━━━(ﾟ∀ﾟ)━━━━!!',
       '8888888888888',
       'これは懐かしいANOBAR感！',
-      'VFDの発光のにじみが最高',
+      'VFDの発光のにじみとグリッドが最高',
       '弾幕テスト中ｗｗｗｗ',
       'ぬるぬる60fpsで動いてる',
       'www',
@@ -85,6 +99,7 @@ export function DebugPage() {
         color: '#facc15',
         priority: 'high',
         oneShot: true,
+        breaking: false,
       });
     }
   };
@@ -217,6 +232,7 @@ export function DebugPage() {
                 items={items}
                 lastBatch={lastBatch}
                 activity={activity}
+                nowPlaying={nowPlaying}
                 onStats={setStats}
               />
             </div>
@@ -227,8 +243,9 @@ export function DebugPage() {
               </span>
               {stats && (
                 <span>
-                  LOGICAL GRID: {stats.logicalWidth}×{stats.logicalHeight} | {stats.fps} FPS |{' '}
-                  {stats.backend.toUpperCase()}
+                  LOGICAL GRID: {stats.logicalWidth}×{stats.logicalHeight} |{' '}
+                  {stats.rotating ? `ROT:${stats.effectiveChannel}` : stats.effectiveChannel} |{' '}
+                  {stats.fps} FPS | {stats.backend.toUpperCase()}
                 </span>
               )}
             </div>
@@ -316,6 +333,50 @@ export function DebugPage() {
                   {p}
                 </button>
               ))}
+
+            <button
+              type="button"
+              onClick={() =>
+                void updateConfig({ display: { showPixelIcons: !config.display.showPixelIcons } })
+              }
+              className={`rounded border px-2 py-1 text-xs ${
+                config.display.showPixelIcons
+                  ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                  : 'border-slate-800 bg-slate-950 text-slate-400'
+              }`}
+            >
+              アイコン: {config.display.showPixelIcons ? 'ON' : 'OFF'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                void updateConfig({
+                  display: { showSpectrumAnalyzer: !config.display.showSpectrumAnalyzer },
+                })
+              }
+              className={`rounded border px-2 py-1 text-xs ${
+                config.display.showSpectrumAnalyzer
+                  ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                  : 'border-slate-800 bg-slate-950 text-slate-400'
+              }`}
+            >
+              スペアナ: {config.display.showSpectrumAnalyzer ? 'ON' : 'OFF'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                void updateConfig({ rotation: { enabled: !config.rotation.enabled } })
+              }
+              className={`rounded border px-2 py-1 text-xs ${
+                config.rotation.enabled
+                  ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                  : 'border-slate-800 bg-slate-950 text-slate-400'
+              }`}
+            >
+              自動巡回: {config.rotation.enabled ? 'ON' : 'OFF'}
+            </button>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -337,7 +398,16 @@ export function DebugPage() {
               className="inline-flex items-center gap-1.5 rounded-lg bg-cyan-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400"
             >
               <Sparkles className="h-3.5 w-3.5" />
-              テスト電文 (1回のみ)
+              テスト電文
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void sendBreakingAlertTest()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-red-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-400"
+            >
+              <AlertTriangle className="h-3.5 w-3.5" />
+              緊急速報テスト
             </button>
 
             <button

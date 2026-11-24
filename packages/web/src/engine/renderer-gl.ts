@@ -34,6 +34,9 @@ uniform int u_mode; // 0 = anobar8-vfd, 1 = anobar-fed, 2 = clean, 3 = shinkanse
 uniform float u_brightness;
 uniform float u_dotIntensity;
 uniform float u_bloom;
+uniform float u_vfdGrid;
+uniform float u_glass;
+uniform vec2 u_pixelShift;
 out vec4 outColor;
 
 vec3 sampleGlow(sampler2D tex, vec2 uv, vec2 px) {
@@ -58,35 +61,68 @@ float dotMatrixMask(vec2 uv, vec2 grid, float intensity) {
   return mix(1.0, 0.18 + 0.82 * pixelBody, intensity);
 }
 
+float vfdAnodeMesh(vec2 uv, vec2 grid, float intensity) {
+  if (intensity <= 0.001) return 1.0;
+  vec2 cell = uv * grid;
+  // Staggered hexagonal/diamond anode mesh pattern characteristic of real VFD tubes
+  float row = floor(cell.y);
+  vec2 hexUv = vec2(cell.x + mod(row, 2.0) * 0.5, cell.y);
+  vec2 f = fract(hexUv) - 0.5;
+  float wire = smoothstep(0.38, 0.49, abs(f.x) + abs(f.y) * 0.65);
+  // Fine horizontal cathode heater filament lines across tube height
+  float filament = 1.0 - 0.14 * (1.0 - smoothstep(0.0, 0.012, abs(fract(uv.y * 4.0) - 0.5)));
+  float meshDarken = mix(1.0, 1.0 - 0.28 * wire, intensity);
+  return meshDarken * mix(1.0, filament, intensity);
+}
+
+vec3 vfdGlassEffect(vec2 uv, float glassStrength) {
+  if (glassStrength <= 0.001) return vec3(0.0);
+  // Subtle curved front-glass diagonal highlight & upper rim reflection
+  float diag = smoothstep(0.35, 0.0, abs((uv.x * 0.45 + uv.y) - 1.15));
+  float topRim = smoothstep(0.14, 0.0, 1.0 - uv.y) * 0.55;
+  return vec3(0.11, 0.16, 0.18) * (diag * 0.24 + topRim * 0.35) * glassStrength;
+}
+
+float tubeVignette(vec2 uv, float glassStrength) {
+  vec2 centered = (uv - 0.5) * 2.0;
+  float edgeDist = dot(centered * vec2(0.45, 0.85), centered * vec2(0.45, 0.85));
+  return mix(1.0, 1.0 - clamp(edgeDist * 0.28, 0.0, 0.38), glassStrength);
+}
+
 void main() {
   vec2 px = 1.0 / max(u_logicalSize, vec2(1.0));
-  vec3 base = texture(u_tex, v_uv).rgb;
-  vec3 glowNear = sampleGlow(u_tex, v_uv, px * 1.15);
-  vec3 glowWide = sampleGlow(u_tex, v_uv, px * 2.4);
+  vec2 shiftedUv = clamp(v_uv + u_pixelShift * px, vec2(0.0), vec2(1.0));
+
+  vec3 base = texture(u_tex, shiftedUv).rgb;
+  vec3 glowNear = sampleGlow(u_tex, shiftedUv, px * 1.15);
+  vec3 glowWide = sampleGlow(u_tex, shiftedUv, px * 2.4);
   vec3 bloomVec = glowNear * 0.65 + glowWide * 0.35;
 
   if (u_mode == 0) {
-    // ANOBAR8 VFD 16-level monochrome quantization
+    // ANOBAR8 VFD 16-level monochrome quantization + mesh grid + glass sheen
     float luma = dot(base, vec3(0.299, 0.587, 0.114));
     float q = floor(clamp(luma * u_brightness, 0.0, 1.0) * 15.0 + 0.5) / 15.0;
-    float mask = dotMatrixMask(v_uv, u_logicalSize, u_dotIntensity);
+    float mask = dotMatrixMask(shiftedUv, u_logicalSize, u_dotIntensity);
+    float mesh = vfdAnodeMesh(shiftedUv, u_logicalSize, u_vfdGrid);
     float bloomLuma = dot(bloomVec, vec3(0.299, 0.587, 0.114));
-    vec3 lit = u_vfdColor * q * mask;
+    vec3 lit = u_vfdColor * q * mask * mesh;
     vec3 halo = u_vfdColor * bloomLuma * u_bloom * u_brightness;
-    vec3 unlitMesh = u_vfdColor * (0.018 + 0.012 * mask);
-    outColor = vec4(clamp(unlitMesh + lit + halo, 0.0, 1.0), 1.0);
+    vec3 unlitMesh = u_vfdColor * (0.018 + 0.014 * mask * mesh);
+    vec3 glass = vfdGlassEffect(v_uv, u_glass);
+    float vig = tubeVignette(v_uv, u_glass);
+    outColor = vec4(clamp((unlitMesh + lit + halo) * vig + glass, 0.0, 1.0), 1.0);
   } else if (u_mode == 1) {
     // Original ANOBAR FED full-color self-luminous dot matrix
-    float mask = dotMatrixMask(v_uv, u_logicalSize, u_dotIntensity);
+    float mask = dotMatrixMask(shiftedUv, u_logicalSize, u_dotIntensity);
     vec3 lit = base * u_brightness * mask;
     vec3 halo = bloomVec * u_bloom * u_brightness;
     vec3 unlitMesh = vec3(0.012, 0.016, 0.022) * mask;
     outColor = vec4(clamp(unlitMesh + lit + halo, 0.0, 1.0), 1.0);
   } else if (u_mode == 3) {
     // Tohoku Shinkansen 3-color circular LED dot matrix
-    vec2 cellUv = (floor(v_uv * u_logicalSize) + 0.5) / max(u_logicalSize, vec2(1.0));
+    vec2 cellUv = (floor(shiftedUv * u_logicalSize) + 0.5) / max(u_logicalSize, vec2(1.0));
     vec3 cellBase = texture(u_tex, cellUv).rgb;
-    vec2 cellPos = fract(v_uv * u_logicalSize) - 0.5;
+    vec2 cellPos = fract(shiftedUv * u_logicalSize) - 0.5;
     float radius = length(cellPos);
     float ledDisc = 1.0 - smoothstep(0.30, 0.47, radius);
     float ledCore = 1.0 - smoothstep(0.0, 0.28, radius);
@@ -176,6 +212,8 @@ export class RendererGL {
     logicalWidth: number,
     logicalHeight: number,
     display: DisplaySettings,
+    pixelShiftX = 0,
+    pixelShiftY = 0,
   ): void {
     const gl = this.gl;
     if (this.canvas.width !== viewportWidth || this.canvas.height !== viewportHeight) {
@@ -254,6 +292,13 @@ export class RendererGL {
     gl.uniform1f(gl.getUniformLocation(this.displayProgram, 'u_brightness'), display.brightness);
     gl.uniform1f(gl.getUniformLocation(this.displayProgram, 'u_dotIntensity'), display.dotIntensity);
     gl.uniform1f(gl.getUniformLocation(this.displayProgram, 'u_bloom'), display.bloom);
+    gl.uniform1f(gl.getUniformLocation(this.displayProgram, 'u_vfdGrid'), display.vfdGridIntensity);
+    gl.uniform1f(gl.getUniformLocation(this.displayProgram, 'u_glass'), display.vfdGlassReflection);
+    gl.uniform2f(
+      gl.getUniformLocation(this.displayProgram, 'u_pixelShift'),
+      pixelShiftX,
+      pixelShiftY,
+    );
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }

@@ -2,8 +2,11 @@ import { networkInterfaces } from 'node:os';
 import type { WebSocket } from 'ws';
 import {
   isItemEnabledBySources,
+  matchesMuteKeywords,
   type ActivityBucket,
   type AppConfig,
+  type NowPlayingPushInput,
+  type NowPlayingState,
   type PushMessageInput,
   type ServerState,
   type SourceStatus,
@@ -12,15 +15,25 @@ import {
   type WsMessage,
 } from '@cathobar/shared';
 import { ConfigStore } from './config-store.js';
+import { CountdownSource } from './sources/countdown.js';
+import { EarthquakeSource } from './sources/earthquake.js';
+import { MarketSource } from './sources/market.js';
 import { MastodonSource } from './sources/mastodon.js';
+import { NowPlayingSource } from './sources/nowplaying.js';
 import { RssSource } from './sources/rss.js';
+import { TransitSource } from './sources/transit.js';
 import type { SourceContext, TickerSource } from './sources/types.js';
 import { WeatherSource } from './sources/weather.js';
+import { parseWebhookPayload } from './sources/webhook.js';
 import { WikipediaSource } from './sources/wikipedia.js';
 
 const MAX_RECENT_ITEMS = 120;
 const BUCKET_MS = 10_000;
 const MAX_BUCKETS = 48;
+
+function normalizeTitleForDedupe(text: string): string {
+  return text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '').trim();
+}
 
 export class TickerHub {
   private readonly clients = new Set<WebSocket>();
@@ -29,16 +42,32 @@ export class TickerHub {
   private readonly sources = new Map<TickerSourceId, TickerSource>();
   private readonly statuses = new Map<TickerSourceId, SourceStatus>();
   private readonly activityMap = new Map<number, number>();
+  private readonly nowPlayingSource: NowPlayingSource;
+  private nowPlaying: NowPlayingState | null = null;
   private activityTimer: ReturnType<typeof setInterval> | null = null;
   private port = 3000;
 
   constructor(private readonly configStore: ConfigStore) {
-    const initialIds: TickerSourceId[] = ['rss', 'wikipedia', 'weather', 'mastodon', 'clock', 'push'];
+    const initialIds: TickerSourceId[] = [
+      'rss',
+      'wikipedia',
+      'weather',
+      'mastodon',
+      'earthquake',
+      'transit',
+      'market',
+      'nowplaying',
+      'countdown',
+      'clock',
+      'push',
+      'webhook',
+    ];
     for (const id of initialIds) {
+      const alwaysReady = id === 'clock' || id === 'push' || id === 'webhook';
       this.statuses.set(id, {
         id,
-        connected: id === 'clock' || id === 'push',
-        active: id === 'clock' || id === 'push',
+        connected: alwaysReady,
+        active: alwaysReady,
         lastFetchAt: null,
         lastError: null,
         itemCount: 0,
@@ -50,13 +79,21 @@ export class TickerHub {
       emitItems: (newItems) => this.handleIncomingItems(newItems),
       retainSourceKeyItems: (sourceKey, keepIds) => this.retainSourceKeyItems(sourceKey, keepIds),
       updateStatus: (partial) => this.updateStatus(partial),
+      updateNowPlaying: (state) => this.setNowPlayingState(state),
     };
+
+    this.nowPlayingSource = new NowPlayingSource(ctx);
 
     const instances: TickerSource[] = [
       new RssSource(ctx),
       new WikipediaSource(ctx),
       new WeatherSource(ctx),
       new MastodonSource(ctx),
+      new EarthquakeSource(ctx),
+      new TransitSource(ctx),
+      new MarketSource(ctx),
+      this.nowPlayingSource,
+      new CountdownSource(ctx),
     ];
 
     for (const src of instances) {
@@ -115,6 +152,8 @@ export class TickerHub {
         timestamp: Date.now(),
         priority: 'high',
         oneShot: true,
+        breaking: false,
+        icon: 'info',
       },
     });
     ws.on('close', () => {
@@ -132,6 +171,7 @@ export class TickerHub {
       activity: this.getActivityBuckets(),
       statuses: Array.from(this.statuses.values()),
       lanUrls: this.getLanUrls(),
+      nowPlaying: this.nowPlaying,
     };
   }
 
@@ -142,6 +182,12 @@ export class TickerHub {
   async updateConfig(patch: unknown): Promise<AppConfig> {
     const updated = await this.configStore.patch(patch);
     const pruned = this.pruneStaleItems(updated);
+
+    this.updateStatus({
+      id: 'webhook',
+      active: updated.sources.webhook.enabled,
+      connected: updated.sources.webhook.enabled,
+    });
 
     for (const src of this.sources.values()) {
       src.onConfigUpdate(updated);
@@ -171,7 +217,26 @@ export class TickerHub {
       timestamp: Date.now(),
       priority: input.priority,
       oneShot: input.oneShot,
+      breaking: input.breaking,
+      icon: input.icon ?? (input.breaking ? 'alert' : 'info'),
     };
+    this.handleIncomingItems([item]);
+    return item;
+  }
+
+  pushNowPlaying(input: NowPlayingPushInput): NowPlayingState {
+    return this.nowPlayingSource.applyExternalPush(input);
+  }
+
+  pushWebhook(
+    preset: string,
+    body: unknown,
+    headers: Record<string, string | undefined> = {},
+  ): TickerItem | null {
+    const cfg = this.configStore.get().sources.webhook;
+    if (!cfg.enabled) return null;
+    const item = parseWebhookPayload(preset, body, headers);
+    if (!item) return null;
     this.handleIncomingItems([item]);
     return item;
   }
@@ -190,14 +255,44 @@ export class TickerHub {
     return urls;
   }
 
+  private setNowPlayingState(state: NowPlayingState | null): void {
+    const prevJson = JSON.stringify(this.nowPlaying);
+    const nextJson = JSON.stringify(state);
+    this.nowPlaying = state;
+    if (prevJson !== nextJson) {
+      this.broadcast({ type: 'nowplaying:update', payload: state });
+    }
+  }
+
   private handleIncomingItems(incoming: TickerItem[]): void {
     const config = this.configStore.get();
     const fresh: TickerItem[] = [];
     let replacedAny = false;
+    const existingNormalized = new Set(
+      this.items.filter((i) => !i.replaceKey).map((i) => normalizeTitleForDedupe(i.text)),
+    );
 
     for (const item of incoming) {
       if (!isItemEnabledBySources(item, config.sources)) continue;
       if (!item.oneShot && this.seenIds.has(item.id)) continue;
+
+      const isExemptFromMute = item.breaking === true || item.source === 'push';
+      if (
+        !isExemptFromMute &&
+        matchesMuteKeywords(item.text, item.badge, config.filtering.muteKeywords)
+      ) {
+        continue;
+      }
+
+      if (config.filtering.dedupeTitles && !item.oneShot && !item.replaceKey) {
+        const norm = normalizeTitleForDedupe(item.text);
+        if (norm.length >= 6 && existingNormalized.has(norm)) {
+          continue;
+        }
+        if (norm.length >= 6) {
+          existingNormalized.add(norm);
+        }
+      }
 
       this.recordActivity(item.timestamp, 1);
       const status = this.statuses.get(item.source);
@@ -255,7 +350,12 @@ export class TickerHub {
     const beforeLen = this.items.length;
     for (let i = this.items.length - 1; i >= 0; i -= 1) {
       const item = this.items[i]!;
-      if (!isItemEnabledBySources(item, config.sources)) {
+      const disabled = !isItemEnabledBySources(item, config.sources);
+      const muted =
+        !item.breaking &&
+        item.source !== 'push' &&
+        matchesMuteKeywords(item.text, item.badge, config.filtering.muteKeywords);
+      if (disabled || muted) {
         this.seenIds.delete(item.id);
         this.items.splice(i, 1);
       }

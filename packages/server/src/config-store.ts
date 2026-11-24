@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import {
   AppConfigSchema,
+  ChannelIdSchema,
   DEFAULT_CONFIG,
   PartialAppConfigSchema,
   type AppConfig,
@@ -69,13 +70,15 @@ export class ConfigStore {
     const rawSources = isPlainObject(obj.sources) ? obj.sources : {};
     const rawRss = isPlainObject(rawSources.rss) ? rawSources.rss : {};
     const rawWeather = isPlainObject(rawSources.weather) ? rawSources.weather : {};
+    const rawFiltering = isPlainObject(obj.filtering) ? obj.filtering : {};
+    const rawRotation = isPlainObject(obj.rotation) ? obj.rotation : {};
 
     const rssFeeds = Array.isArray(rawRss.feeds)
       ? rawRss.feeds.map((entry) =>
-        isPlainObject(entry) && typeof entry.url === 'string'
-          ? { ...entry, url: migrateLegacyRssUrl(entry.url) }
-          : entry,
-      )
+          isPlainObject(entry) && typeof entry.url === 'string'
+            ? { ...entry, url: migrateLegacyRssUrl(entry.url) }
+            : entry,
+        )
       : DEFAULT_CONFIG.sources.rss.feeds;
 
     // Migrate legacy single-city weather config to multi-location array
@@ -100,8 +103,9 @@ export class ConfigStore {
       ];
     }
 
-    const activeChannel =
-      obj.activeChannel === 'bluesky' ? 'mastodon' : (obj.activeChannel ?? DEFAULT_CONFIG.activeChannel);
+    const rawChannel = obj.activeChannel === 'bluesky' ? 'mastodon' : obj.activeChannel;
+    const channelCheck = ChannelIdSchema.safeParse(rawChannel);
+    const activeChannel = channelCheck.success ? channelCheck.data : DEFAULT_CONFIG.activeChannel;
 
     const merged = {
       ...DEFAULT_CONFIG,
@@ -110,6 +114,18 @@ export class ConfigStore {
       display: {
         ...DEFAULT_CONFIG.display,
         ...(isPlainObject(obj.display) ? obj.display : {}),
+      },
+      rotation: {
+        ...DEFAULT_CONFIG.rotation,
+        ...rawRotation,
+      },
+      filtering: {
+        ...DEFAULT_CONFIG.filtering,
+        ...rawFiltering,
+        weights: {
+          ...DEFAULT_CONFIG.filtering.weights,
+          ...(isPlainObject(rawFiltering.weights) ? rawFiltering.weights : {}),
+        },
       },
       sources: {
         rss: {
@@ -136,6 +152,30 @@ export class ConfigStore {
           ...DEFAULT_CONFIG.sources.mastodon,
           ...(isPlainObject(rawSources.mastodon) ? rawSources.mastodon : {}),
         },
+        earthquake: {
+          ...DEFAULT_CONFIG.sources.earthquake,
+          ...(isPlainObject(rawSources.earthquake) ? rawSources.earthquake : {}),
+        },
+        transit: {
+          ...DEFAULT_CONFIG.sources.transit,
+          ...(isPlainObject(rawSources.transit) ? rawSources.transit : {}),
+        },
+        market: {
+          ...DEFAULT_CONFIG.sources.market,
+          ...(isPlainObject(rawSources.market) ? rawSources.market : {}),
+        },
+        nowplaying: {
+          ...DEFAULT_CONFIG.sources.nowplaying,
+          ...(isPlainObject(rawSources.nowplaying) ? rawSources.nowplaying : {}),
+        },
+        countdown: {
+          ...DEFAULT_CONFIG.sources.countdown,
+          ...(isPlainObject(rawSources.countdown) ? rawSources.countdown : {}),
+        },
+        webhook: {
+          ...DEFAULT_CONFIG.sources.webhook,
+          ...(isPlainObject(rawSources.webhook) ? rawSources.webhook : {}),
+        },
       },
     };
     return AppConfigSchema.parse(merged);
@@ -148,6 +188,18 @@ export class ConfigStore {
       display: {
         ...current.display,
         ...(patch.display ?? {}),
+      },
+      rotation: {
+        ...current.rotation,
+        ...(patch.rotation ?? {}),
+      },
+      filtering: {
+        ...current.filtering,
+        ...(patch.filtering ?? {}),
+        weights: {
+          ...current.filtering.weights,
+          ...(patch.filtering?.weights ?? {}),
+        },
       },
       sources: {
         rss: {
@@ -165,6 +217,30 @@ export class ConfigStore {
         mastodon: {
           ...current.sources.mastodon,
           ...(patch.sources?.mastodon ?? {}),
+        },
+        earthquake: {
+          ...current.sources.earthquake,
+          ...(patch.sources?.earthquake ?? {}),
+        },
+        transit: {
+          ...current.sources.transit,
+          ...(patch.sources?.transit ?? {}),
+        },
+        market: {
+          ...current.sources.market,
+          ...(patch.sources?.market ?? {}),
+        },
+        nowplaying: {
+          ...current.sources.nowplaying,
+          ...(patch.sources?.nowplaying ?? {}),
+        },
+        countdown: {
+          ...current.sources.countdown,
+          ...(patch.sources?.countdown ?? {}),
+        },
+        webhook: {
+          ...current.sources.webhook,
+          ...(patch.sources?.webhook ?? {}),
         },
       },
     };

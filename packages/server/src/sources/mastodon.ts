@@ -1,5 +1,10 @@
 import WebSocket from 'ws';
-import type { AppConfig, MastodonSourceConfig, TickerItem } from '@cathobar/shared';
+import {
+  isChannelActiveInConfig,
+  type AppConfig,
+  type MastodonSourceConfig,
+  type TickerItem,
+} from '@cathobar/shared';
 import { cleanText, type SourceContext, type TickerSource } from './types.js';
 
 export interface MastodonApiStatus {
@@ -75,6 +80,8 @@ export function parseMastodonStatus(
     timestamp: Date.now(),
     priority: 'normal',
     oneShot: false,
+    breaking: false,
+    icon: 'mastodon',
     url: status.url,
   };
 }
@@ -115,8 +122,7 @@ export class MastodonSource implements TickerSource {
 
   private evaluateState(config: AppConfig): void {
     const m = config.sources.mastodon;
-    const nextRun =
-      m.enabled && (config.activeChannel === 'all' || config.activeChannel === 'mastodon');
+    const nextRun = m.enabled && isChannelActiveInConfig(config, 'mastodon');
     const nextKey = `${m.instanceUrl}|${m.stream}|${m.hashtag}|${m.accessToken}|${m.pollIntervalSec}`;
 
     if (!nextRun) {

@@ -1,10 +1,14 @@
 import {
   isItemEnabledBySources,
+  sourceMatchesChannel,
+  type AppConfig,
   type ChannelId,
   type LayoutMode,
   type ShinkansenScrollStyle,
+  type SourceWeights,
   type SourcesConfig,
   type TickerItem,
+  type TickerSourceId,
   type VisualMode,
 } from '@cathobar/shared';
 
@@ -17,6 +21,7 @@ export interface ActiveTickerSpan {
   speedScale: number;
   x: number;
   width: number;
+  iconWidth: number;
   badgeWidth: number;
   alpha: number;
 }
@@ -61,6 +66,29 @@ export function computeEdgeAlpha(
   return Math.max(0, Math.min(1, alpha));
 }
 
+/**
+ * Computes the effective channel for client-side time-sliced rotation without mutating server config.
+ */
+export function computeEffectiveChannel(
+  config: Pick<AppConfig, 'activeChannel' | 'rotation'>,
+  nowMs: number,
+): { channel: ChannelId; progress: number; rotating: boolean } {
+  const rot = config.rotation;
+  if (!rot || !rot.enabled || rot.channels.length === 0) {
+    return { channel: config.activeChannel, progress: 0, rotating: false };
+  }
+  const intervalMs = Math.max(5_000, rot.intervalSec * 1000);
+  const totalSlots = rot.channels.length;
+  const slotFloat = nowMs / intervalMs;
+  const idx = Math.floor(slotFloat) % totalSlots;
+  const progress = slotFloat - Math.floor(slotFloat);
+  return {
+    channel: rot.channels[idx] ?? config.activeChannel,
+    progress,
+    rotating: true,
+  };
+}
+
 export interface StepParams {
   dtSec: number;
   tickerWidth: number;
@@ -73,6 +101,7 @@ export interface StepParams {
   activeChannel: ChannelId;
   scrollSpeed: number;
   showBadge: boolean;
+  showPixelIcons?: boolean;
   measureText: MeasureTextFn;
 }
 
@@ -82,16 +111,59 @@ interface ShinkansenState {
   timerSec: number;
 }
 
+function getSourceWeight(source: TickerSourceId, weights?: Partial<SourceWeights>): number {
+  if (!weights) return 1;
+  switch (source) {
+    case 'rss':
+      return weights.rss ?? 3;
+    case 'weather':
+      return weights.weather ?? 2;
+    case 'mastodon':
+      return weights.mastodon ?? 2;
+    case 'wikipedia':
+      return weights.wikipedia ?? 1;
+    case 'earthquake':
+      return weights.earthquake ?? 2;
+    case 'transit':
+      return weights.transit ?? 2;
+    case 'market':
+      return weights.market ?? 2;
+    case 'nowplaying':
+      return weights.nowplaying ?? 2;
+    case 'countdown':
+      return weights.countdown ?? 1;
+    case 'webhook':
+      return weights.webhook ?? 2;
+    case 'push':
+      return 2;
+    case 'clock':
+      return 0;
+  }
+}
+
 export class TickerLayoutEngine {
   private spans: ActiveTickerSpan[] = [];
   private priorityQueue: TickerItem[] = [];
   private pool: TickerItem[] = [];
   private poolCursor = 0;
+  private activeChannel: ChannelId = 'all';
+  private weights: Partial<SourceWeights> | undefined = undefined;
+  private readonly sourceCursors = new Map<TickerSourceId, number>();
+  private readonly swrrCurrent = new Map<TickerSourceId, number>();
   private uidCounter = 0;
   private danmakuSlotCursor = 0;
   private shinkansenState: ShinkansenState | null = null;
 
-  setPool(items: TickerItem[], activeChannel: ChannelId, sources?: SourcesConfig): void {
+  setPool(
+    items: TickerItem[],
+    activeChannel: ChannelId,
+    sources?: SourcesConfig,
+    weights?: Partial<SourceWeights>,
+  ): void {
+    this.activeChannel = activeChannel;
+    if (weights !== undefined) {
+      this.weights = weights;
+    }
     const filtered = filterByChannel(items, activeChannel, sources).filter((item) => !item.oneShot);
     this.pool = filtered;
     if (this.poolCursor >= this.pool.length) {
@@ -110,6 +182,7 @@ export class TickerLayoutEngine {
   }
 
   enqueue(items: TickerItem[], activeChannel: ChannelId, sources?: SourcesConfig): void {
+    this.activeChannel = activeChannel;
     const filtered = filterByChannel(items, activeChannel, sources);
     for (const item of filtered) {
       if (item.priority === 'high' || item.oneShot) {
@@ -148,9 +221,11 @@ export class TickerLayoutEngine {
       activeChannel,
       scrollSpeed,
       showBadge,
+      showPixelIcons = false,
       measureText,
     } = params;
 
+    this.activeChannel = activeChannel;
     const clampedDt = Math.min(0.1, Math.max(0, dtSec));
 
     if (visualMode === 'shinkansen-led') {
@@ -162,6 +237,7 @@ export class TickerLayoutEngine {
           tickerHeight,
           scrollSpeed,
           showBadge,
+          showPixelIcons,
           measureText,
         );
       }
@@ -178,6 +254,7 @@ export class TickerLayoutEngine {
         1,
         ledFontSize,
         showBadge,
+        showPixelIcons,
         fadeMargin,
         measureText,
       );
@@ -202,7 +279,15 @@ export class TickerLayoutEngine {
     this.spans = this.spans.filter((s) => s.x + s.width > -6);
 
     if (effectiveMode === 'danmaku') {
-      this.stepDanmaku(tickerWidth, tickerHeight, logicalHeight, showBadge, fadeMargin, measureText);
+      this.stepDanmaku(
+        tickerWidth,
+        tickerHeight,
+        logicalHeight,
+        showBadge,
+        showPixelIcons,
+        fadeMargin,
+        measureText,
+      );
     } else {
       const safeLanes = Math.max(1, lanes);
       const laneHeight = tickerHeight / safeLanes;
@@ -212,6 +297,7 @@ export class TickerLayoutEngine {
         safeLanes,
         fontSize,
         showBadge,
+        showPixelIcons,
         fadeMargin,
         measureText,
       );
@@ -226,6 +312,7 @@ export class TickerLayoutEngine {
     tickerHeight: number,
     scrollSpeed: number,
     showBadge: boolean,
+    showPixelIcons: boolean,
     measureText: MeasureTextFn,
   ): ActiveTickerSpan[] {
     const fontSize = Math.max(11, Math.round(tickerHeight * 0.78));
@@ -233,10 +320,11 @@ export class TickerLayoutEngine {
     if (!this.shinkansenState) {
       const nextItem = this.pickNextItem();
       if (!nextItem) return [];
-      const { badgeWidth, totalWidth } = measureSpanWidth(
+      const { iconWidth, badgeWidth, totalWidth } = measureSpanWidth(
         nextItem,
         fontSize,
         showBadge,
+        showPixelIcons,
         measureText,
       );
       this.uidCounter += 1;
@@ -252,6 +340,7 @@ export class TickerLayoutEngine {
           speedScale: 1,
           x: 4,
           width: totalWidth,
+          iconWidth,
           badgeWidth,
           alpha: 0,
         },
@@ -261,15 +350,16 @@ export class TickerLayoutEngine {
     const st = this.shinkansenState;
     st.timerSec += dtSec;
 
-    // Recalculate metrics if resolution/fontSize changed mid-flight
     if (Math.abs(st.span.fontSize - fontSize) > 0.5) {
-      const { badgeWidth, totalWidth } = measureSpanWidth(
+      const { iconWidth, badgeWidth, totalWidth } = measureSpanWidth(
         st.span.item,
         fontSize,
         showBadge,
+        showPixelIcons,
         measureText,
       );
       st.span.fontSize = fontSize;
+      st.span.iconWidth = iconWidth;
       st.span.badgeWidth = badgeWidth;
       st.span.width = totalWidth;
     }
@@ -324,6 +414,7 @@ export class TickerLayoutEngine {
     lanes: number,
     fontSize: number,
     showBadge: boolean,
+    showPixelIcons: boolean,
     fadeMargin: number,
     measureText: MeasureTextFn,
   ): void {
@@ -340,10 +431,11 @@ export class TickerLayoutEngine {
       if (rightmost <= tickerWidth - gap) {
         const nextItem = this.pickNextItem();
         if (!nextItem) continue;
-        const { badgeWidth, totalWidth } = measureSpanWidth(
+        const { iconWidth, badgeWidth, totalWidth } = measureSpanWidth(
           nextItem,
           fontSize,
           showBadge,
+          showPixelIcons,
           measureText,
         );
         const startX = tickerWidth + 4;
@@ -357,6 +449,7 @@ export class TickerLayoutEngine {
           speedScale: 1,
           x: startX,
           width: totalWidth,
+          iconWidth,
           badgeWidth,
           alpha: computeEdgeAlpha(startX, totalWidth, tickerWidth, fadeMargin),
         });
@@ -369,6 +462,7 @@ export class TickerLayoutEngine {
     tickerHeight: number,
     logicalHeight: number,
     showBadge: boolean,
+    showPixelIcons: boolean,
     fadeMargin: number,
     measureText: MeasureTextFn,
   ): void {
@@ -411,10 +505,11 @@ export class TickerLayoutEngine {
       const nextItem = this.pickNextItem();
       if (!nextItem) break;
 
-      const { badgeWidth, totalWidth } = measureSpanWidth(
+      const { iconWidth, badgeWidth, totalWidth } = measureSpanWidth(
         nextItem,
         fontSize,
         showBadge,
+        showPixelIcons,
         measureText,
       );
       const startX = tickerWidth + 4;
@@ -431,6 +526,7 @@ export class TickerLayoutEngine {
         speedScale,
         x: startX,
         width: totalWidth,
+        iconWidth,
         badgeWidth,
         alpha: computeEdgeAlpha(startX, totalWidth, tickerWidth, fadeMargin),
       });
@@ -444,6 +540,28 @@ export class TickerLayoutEngine {
     if (this.pool.length === 0) {
       return null;
     }
+    if (this.activeChannel === 'all' && this.weights) {
+      const grouped = this.groupWeightedPool();
+      if (grouped.totalWeight > 0) {
+        let bestSrc: TickerSourceId | null = null;
+        let bestScore = -Infinity;
+        for (const [src, entry] of grouped.buckets) {
+          const cur = (this.swrrCurrent.get(src) ?? 0) + entry.weight;
+          if (cur > bestScore) {
+            bestScore = cur;
+            bestSrc = src;
+          }
+        }
+        if (bestSrc) {
+          const bucket = grouped.buckets.get(bestSrc);
+          if (bucket && bucket.items.length > 0) {
+            const c = this.sourceCursors.get(bestSrc) ?? 0;
+            return bucket.items[c % bucket.items.length] ?? null;
+          }
+        }
+      }
+      return null;
+    }
     return this.pool[this.poolCursor % this.pool.length] ?? null;
   }
 
@@ -454,9 +572,61 @@ export class TickerLayoutEngine {
     if (this.pool.length === 0) {
       return null;
     }
+
+    if (this.activeChannel === 'all' && this.weights) {
+      const grouped = this.groupWeightedPool();
+      if (grouped.totalWeight <= 0) {
+        return null;
+      }
+
+      // Smooth Weighted Round-Robin across active sources
+      let chosenSrc: TickerSourceId | null = null;
+      let maxCurrent = -Infinity;
+      for (const [src, entry] of grouped.buckets) {
+        const nextCurrent = (this.swrrCurrent.get(src) ?? 0) + entry.weight;
+        this.swrrCurrent.set(src, nextCurrent);
+        if (nextCurrent > maxCurrent) {
+          maxCurrent = nextCurrent;
+          chosenSrc = src;
+        }
+      }
+      if (!chosenSrc) return null;
+
+      this.swrrCurrent.set(chosenSrc, maxCurrent - grouped.totalWeight);
+      const bucket = grouped.buckets.get(chosenSrc);
+      if (!bucket || bucket.items.length === 0) return null;
+
+      const cur = this.sourceCursors.get(chosenSrc) ?? 0;
+      const item = bucket.items[cur % bucket.items.length] ?? null;
+      this.sourceCursors.set(chosenSrc, (cur + 1) % bucket.items.length);
+      return item;
+    }
+
     const item = this.pool[this.poolCursor % this.pool.length] ?? null;
     this.poolCursor = (this.poolCursor + 1) % this.pool.length;
     return item;
+  }
+
+  private groupWeightedPool(): {
+    buckets: Map<TickerSourceId, { weight: number; items: TickerItem[] }>;
+    totalWeight: number;
+  } {
+    const buckets = new Map<TickerSourceId, { weight: number; items: TickerItem[] }>();
+    for (const item of this.pool) {
+      const weight = getSourceWeight(item.source, this.weights);
+      if (weight <= 0) continue;
+      let bucket = buckets.get(item.source);
+      if (!bucket) {
+        bucket = { weight, items: [] };
+        buckets.set(item.source, bucket);
+      }
+      bucket.items.push(item);
+    }
+    let totalWeight = 0;
+    for (const entry of buckets.values()) {
+      totalWeight += entry.weight;
+    }
+    return { buckets, totalWeight };
   }
 }
 
@@ -464,14 +634,18 @@ function measureSpanWidth(
   item: TickerItem,
   fontSize: number,
   showBadge: boolean,
+  showPixelIcons: boolean,
   measureText: MeasureTextFn,
-): { badgeWidth: number; totalWidth: number } {
+): { iconWidth: number; badgeWidth: number; totalWidth: number } {
+  const iconSize = Math.max(10, Math.round(fontSize * 0.92));
+  const iconWidth = showPixelIcons ? iconSize + 4 : 0;
   const badgeSize = Math.max(8, fontSize * 0.84);
   const badgeWidth = showBadge ? Math.ceil(measureText(`[${item.badge}]`, badgeSize, 700)) + 4 : 0;
   const textWidth = Math.ceil(measureText(item.text, fontSize, 500));
   return {
+    iconWidth,
     badgeWidth,
-    totalWidth: badgeWidth + textWidth + 6,
+    totalWidth: iconWidth + badgeWidth + textWidth + 6,
   };
 }
 
@@ -480,10 +654,10 @@ export function isItemVisible(
   activeChannel: ChannelId,
   sources?: SourcesConfig,
 ): boolean {
+  if (item.breaking) return true;
   if (activeChannel === 'clock') return false;
   if (sources && !isItemEnabledBySources(item, sources)) return false;
-  if (activeChannel === 'all') return true;
-  return item.source === activeChannel || item.source === 'push';
+  return sourceMatchesChannel(item.source, activeChannel);
 }
 
 export function filterByChannel(

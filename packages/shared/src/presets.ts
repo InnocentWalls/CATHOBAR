@@ -2,10 +2,19 @@ import type {
   AppConfig,
   ChannelId,
   LayoutMode,
+  MarketSymbolConfig,
   ShinkansenScrollStyle,
+  SourceWeights,
   VfdPalette,
   VisualMode,
 } from './schema.js';
+
+export const DEFAULT_MARKET_SYMBOLS: MarketSymbolConfig[] = [
+  { id: 'usdjpy', symbol: 'USDJPY=X', label: 'USD/JPY', enabled: true },
+  { id: 'nikkei225', symbol: '^N225', label: '日経平均', enabled: true },
+  { id: 'sp500', symbol: '^GSPC', label: 'S&P 500', enabled: true },
+  { id: 'btcjpy', symbol: 'BTC-JPY', label: 'BTC/JPY', enabled: true },
+];
 
 export const DEFAULT_CONFIG: AppConfig = {
   version: 1,
@@ -26,6 +35,36 @@ export const DEFAULT_CONFIG: AppConfig = {
     showClockOverlay: true,
     showActivityGraph: true,
     showSourceBadge: true,
+    showPixelIcons: true,
+    vfdGridIntensity: 0.45,
+    vfdGlassReflection: 0.3,
+    burnInShift: true,
+    breakingAlertEnabled: true,
+    breakingAlertDurationSec: 10,
+    breakingAlertSound: false,
+    showSpectrumAnalyzer: true,
+    spectrumAudioInput: 'auto',
+  },
+  rotation: {
+    enabled: false,
+    intervalSec: 45,
+    channels: ['rss', 'weather', 'disaster', 'market', 'nowplaying', 'wikipedia', 'clock'],
+  },
+  filtering: {
+    muteKeywords: [],
+    dedupeTitles: true,
+    weights: {
+      rss: 3,
+      weather: 2,
+      mastodon: 2,
+      wikipedia: 1,
+      earthquake: 2,
+      transit: 2,
+      market: 2,
+      nowplaying: 2,
+      countdown: 1,
+      webhook: 2,
+    },
   },
   sources: {
     rss: {
@@ -77,6 +116,43 @@ export const DEFAULT_CONFIG: AppConfig = {
       maxItemsPerMinute: 24,
       pollIntervalSec: 20,
     },
+    earthquake: {
+      enabled: true,
+      minScale: 20,
+      breakingMinScale: 45,
+      includeTsunami: true,
+      pollIntervalSec: 120,
+    },
+    transit: {
+      enabled: true,
+      pollIntervalSec: 180,
+      usePublicOdpt: true,
+      odptToken: '',
+      customFeeds: [],
+      lineFilter: [],
+      onlyProblems: false,
+      breakingOnSuspension: false,
+    },
+    market: {
+      enabled: true,
+      pollIntervalSec: 180,
+      symbols: DEFAULT_MARKET_SYMBOLS,
+    },
+    nowplaying: {
+      enabled: true,
+      pollIntervalSec: 8,
+      enableSystemMedia: true,
+      lastfmUsername: '',
+      lastfmApiKey: '',
+    },
+    countdown: {
+      enabled: true,
+      events: [],
+    },
+    webhook: {
+      enabled: true,
+      secret: '',
+    },
   },
 };
 
@@ -111,7 +187,7 @@ export const VFD_PALETTES: Record<
 export const VISUAL_MODE_LABELS: Record<VisualMode, { label: string; description: string }> = {
   'anobar8-vfd': {
     label: 'ANOBAR8 (VFD 16階調)',
-    description: '蛍光表示管風のモノクロ16階調・自発光ブルーム・残像表現',
+    description: '蛍光表示管風のモノクロ16階調・メッシュグリッド・ブルーム・残像表現',
   },
   'anobar-fed': {
     label: '初代 ANOBAR (FED フルカラー)',
@@ -162,6 +238,10 @@ export const CHANNEL_LABELS: Record<ChannelId, { label: string; short: string }>
   wikipedia: { label: 'Wikipedia ランダム', short: 'WIKI' },
   weather: { label: '天気予報', short: 'WTHR' },
   mastodon: { label: 'Mastodon タイムライン', short: 'MAST' },
+  disaster: { label: '防災・鉄道運行情報', short: 'SAFE' },
+  market: { label: '市況・為替・株', short: 'MKT' },
+  nowplaying: { label: 'Now Playing', short: 'PLAY' },
+  countdown: { label: 'カウントダウン', short: 'CNTD' },
   clock: { label: '時計 / ステータス', short: 'CLK' },
 };
 
@@ -192,3 +272,44 @@ export const CITY_PRESETS: CityPreset[] = [
   { name: '福岡', latitude: 33.5902, longitude: 130.4017 },
   { name: '那覇', latitude: 26.2124, longitude: 127.6809 },
 ];
+
+export interface MarketSymbolPreset {
+  id: string;
+  symbol: string;
+  label: string;
+}
+
+export const MARKET_SYMBOL_PRESETS: MarketSymbolPreset[] = [
+  { id: 'usdjpy', symbol: 'USDJPY=X', label: 'USD/JPY' },
+  { id: 'eurjpy', symbol: 'EURJPY=X', label: 'EUR/JPY' },
+  { id: 'nikkei225', symbol: '^N225', label: '日経平均' },
+  { id: 'sp500', symbol: '^GSPC', label: 'S&P 500' },
+  { id: 'nasdaq', symbol: '^IXIC', label: 'NASDAQ' },
+  { id: 'btcjpy', symbol: 'BTC-JPY', label: 'BTC/JPY' },
+  { id: 'ethjpy', symbol: 'ETH-JPY', label: 'ETH/JPY' },
+];
+
+export const EARTHQUAKE_SCALE_OPTIONS: Array<{ value: number; label: string }> = [
+  { value: 10, label: '震度1以上' },
+  { value: 20, label: '震度2以上' },
+  { value: 30, label: '震度3以上' },
+  { value: 40, label: '震度4以上' },
+  { value: 45, label: '震度5弱以上' },
+  { value: 50, label: '震度5強以上' },
+  { value: 55, label: '震度6弱以上' },
+  { value: 60, label: '震度6強以上' },
+  { value: 70, label: '震度7' },
+];
+
+export const SOURCE_WEIGHT_LABELS: Record<keyof SourceWeights, string> = {
+  rss: 'RSS ニュース',
+  weather: '天気予報',
+  mastodon: 'Mastodon',
+  wikipedia: 'Wikipedia',
+  earthquake: '地震・津波',
+  transit: '鉄道運行',
+  market: '市況・為替',
+  nowplaying: 'Now Playing',
+  countdown: 'カウントダウン',
+  webhook: 'Webhook',
+};

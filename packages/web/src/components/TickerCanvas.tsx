@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { ActivityBucket, AppConfig, TickerItem } from '@cathobar/shared';
+import type { ActivityBucket, AppConfig, NowPlayingState, TickerItem } from '@cathobar/shared';
 import { TickerEngine, type EngineStats } from '../engine/ticker-engine.js';
 
 interface TickerCanvasProps {
@@ -7,6 +7,7 @@ interface TickerCanvasProps {
   items: TickerItem[];
   lastBatch: TickerItem[];
   activity: ActivityBucket[];
+  nowPlaying?: NowPlayingState | null;
   onStats?: (stats: EngineStats) => void;
   className?: string;
 }
@@ -16,6 +17,7 @@ export function TickerCanvas({
   items,
   lastBatch,
   activity,
+  nowPlaying = null,
   onStats,
   className = '',
 }: TickerCanvasProps) {
@@ -35,7 +37,7 @@ export function TickerCanvas({
 
     const rect = canvas.getBoundingClientRect();
     engine.setViewportSize(rect.width, rect.height);
-    engine.syncState(items, activity, config);
+    engine.syncState(items, activity, config, nowPlaying);
     engine.start();
 
     const ro = new ResizeObserver((entries) => {
@@ -55,8 +57,8 @@ export function TickerCanvas({
   }, []);
 
   useEffect(() => {
-    engineRef.current?.syncState(items, activity, config);
-  }, [config, items, activity]);
+    engineRef.current?.syncState(items, activity, config, nowPlaying);
+  }, [config, items, activity, nowPlaying]);
 
   useEffect(() => {
     if (lastBatch.length > 0) {
@@ -67,6 +69,10 @@ export function TickerCanvas({
   useEffect(() => {
     engineRef.current?.updateActivity(activity);
   }, [activity]);
+
+  useEffect(() => {
+    engineRef.current?.updateNowPlaying(nowPlaying);
+  }, [nowPlaying]);
 
   return (
     <canvas

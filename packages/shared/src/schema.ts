@@ -17,12 +17,42 @@ export type VfdPalette = z.infer<typeof VfdPaletteSchema>;
 export const LayoutModeSchema = z.enum(['auto', 'lanes', 'danmaku']);
 export type LayoutMode = z.infer<typeof LayoutModeSchema>;
 
+export const PixelIconIdSchema = z.enum([
+  'sun',
+  'partly-cloudy',
+  'cloud',
+  'rain',
+  'snow',
+  'thunder',
+  'fog',
+  'news',
+  'wiki',
+  'mastodon',
+  'quake',
+  'tsunami',
+  'train',
+  'train-alert',
+  'music',
+  'market-up',
+  'market-down',
+  'market-flat',
+  'timer',
+  'webhook',
+  'alert',
+  'info',
+]);
+export type PixelIconId = z.infer<typeof PixelIconIdSchema>;
+
 export const ChannelIdSchema = z.enum([
   'all',
   'rss',
   'wikipedia',
   'weather',
   'mastodon',
+  'disaster',
+  'market',
+  'nowplaying',
+  'countdown',
   'clock',
 ]);
 export type ChannelId = z.infer<typeof ChannelIdSchema>;
@@ -32,8 +62,14 @@ export const TickerSourceIdSchema = z.enum([
   'wikipedia',
   'weather',
   'mastodon',
+  'earthquake',
+  'transit',
+  'market',
+  'nowplaying',
+  'countdown',
   'clock',
   'push',
+  'webhook',
 ]);
 export type TickerSourceId = z.infer<typeof TickerSourceIdSchema>;
 
@@ -58,6 +94,9 @@ export type WeatherLocation = z.infer<typeof WeatherLocationSchema>;
 export const MastodonStreamTypeSchema = z.enum(['public:local', 'public', 'hashtag']);
 export type MastodonStreamType = z.infer<typeof MastodonStreamTypeSchema>;
 
+export const SpectrumAudioInputSchema = z.enum(['auto', 'mic', 'synth']);
+export type SpectrumAudioInput = z.infer<typeof SpectrumAudioInputSchema>;
+
 export const DisplaySettingsSchema = z.object({
   visualMode: VisualModeSchema.default('anobar8-vfd'),
   vfdPalette: VfdPaletteSchema.default('cyan'),
@@ -74,8 +113,48 @@ export const DisplaySettingsSchema = z.object({
   showClockOverlay: z.boolean().default(true),
   showActivityGraph: z.boolean().default(true),
   showSourceBadge: z.boolean().default(true),
+  showPixelIcons: z.boolean().default(true),
+  vfdGridIntensity: z.number().min(0).max(1).default(0.45),
+  vfdGlassReflection: z.number().min(0).max(1).default(0.3),
+  burnInShift: z.boolean().default(true),
+  breakingAlertEnabled: z.boolean().default(true),
+  breakingAlertDurationSec: z.number().min(4).max(30).default(10),
+  breakingAlertSound: z.boolean().default(false),
+  showSpectrumAnalyzer: z.boolean().default(true),
+  spectrumAudioInput: SpectrumAudioInputSchema.default('auto'),
 });
 export type DisplaySettings = z.infer<typeof DisplaySettingsSchema>;
+
+export const ChannelRotationConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  intervalSec: z.number().int().min(10).max(600).default(45),
+  channels: z
+    .array(ChannelIdSchema)
+    .min(1)
+    .default(['rss', 'weather', 'disaster', 'market', 'nowplaying', 'wikipedia', 'clock']),
+});
+export type ChannelRotationConfig = z.infer<typeof ChannelRotationConfigSchema>;
+
+export const SourceWeightsSchema = z.object({
+  rss: z.number().int().min(0).max(10).default(3),
+  weather: z.number().int().min(0).max(10).default(2),
+  mastodon: z.number().int().min(0).max(10).default(2),
+  wikipedia: z.number().int().min(0).max(10).default(1),
+  earthquake: z.number().int().min(0).max(10).default(2),
+  transit: z.number().int().min(0).max(10).default(2),
+  market: z.number().int().min(0).max(10).default(2),
+  nowplaying: z.number().int().min(0).max(10).default(2),
+  countdown: z.number().int().min(0).max(10).default(1),
+  webhook: z.number().int().min(0).max(10).default(2),
+});
+export type SourceWeights = z.infer<typeof SourceWeightsSchema>;
+
+export const FilterConfigSchema = z.object({
+  muteKeywords: z.array(z.string().min(1).max(80)).default([]),
+  dedupeTitles: z.boolean().default(true),
+  weights: SourceWeightsSchema.default({}),
+});
+export type FilterConfig = z.infer<typeof FilterConfigSchema>;
 
 export const RssSourceConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -108,11 +187,83 @@ export const MastodonSourceConfigSchema = z.object({
 });
 export type MastodonSourceConfig = z.infer<typeof MastodonSourceConfigSchema>;
 
+export const EarthquakeSourceConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  minScale: z.number().int().min(10).max(70).default(20),
+  breakingMinScale: z.number().int().min(10).max(70).default(45),
+  includeTsunami: z.boolean().default(true),
+  pollIntervalSec: z.number().int().min(30).max(600).default(120),
+});
+export type EarthquakeSourceConfig = z.infer<typeof EarthquakeSourceConfigSchema>;
+
+export const TransitSourceConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  pollIntervalSec: z.number().int().min(60).max(900).default(180),
+  usePublicOdpt: z.boolean().default(true),
+  odptToken: z.string().max(256).default(''),
+  customFeeds: z.array(RssFeedConfigSchema).default([]),
+  lineFilter: z.array(z.string().min(1).max(40)).default([]),
+  onlyProblems: z.boolean().default(false),
+  breakingOnSuspension: z.boolean().default(false),
+});
+export type TransitSourceConfig = z.infer<typeof TransitSourceConfigSchema>;
+
+export const MarketSymbolConfigSchema = z.object({
+  id: z.string().min(1),
+  symbol: z.string().min(1).max(32),
+  label: z.string().min(1).max(40),
+  enabled: z.boolean().default(true),
+});
+export type MarketSymbolConfig = z.infer<typeof MarketSymbolConfigSchema>;
+
+export const MarketSourceConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  pollIntervalSec: z.number().int().min(30).max(3600).default(180),
+  symbols: z.array(MarketSymbolConfigSchema).default([]),
+});
+export type MarketSourceConfig = z.infer<typeof MarketSourceConfigSchema>;
+
+export const NowPlayingSourceConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  pollIntervalSec: z.number().int().min(3).max(60).default(8),
+  enableSystemMedia: z.boolean().default(true),
+  lastfmUsername: z.string().max(80).default(''),
+  lastfmApiKey: z.string().max(128).default(''),
+});
+export type NowPlayingSourceConfig = z.infer<typeof NowPlayingSourceConfigSchema>;
+
+export const CountdownEventSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1).max(60),
+  targetIso: z.string().min(1),
+  enabled: z.boolean().default(true),
+  alertOnComplete: z.boolean().default(true),
+});
+export type CountdownEvent = z.infer<typeof CountdownEventSchema>;
+
+export const CountdownSourceConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  events: z.array(CountdownEventSchema).default([]),
+});
+export type CountdownSourceConfig = z.infer<typeof CountdownSourceConfigSchema>;
+
+export const WebhookSourceConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  secret: z.string().max(128).default(''),
+});
+export type WebhookSourceConfig = z.infer<typeof WebhookSourceConfigSchema>;
+
 export const SourcesConfigSchema = z.object({
   rss: RssSourceConfigSchema.default({}),
   wikipedia: WikipediaSourceConfigSchema.default({}),
   weather: WeatherSourceConfigSchema.default({}),
   mastodon: MastodonSourceConfigSchema.default({}),
+  earthquake: EarthquakeSourceConfigSchema.default({}),
+  transit: TransitSourceConfigSchema.default({}),
+  market: MarketSourceConfigSchema.default({}),
+  nowplaying: NowPlayingSourceConfigSchema.default({}),
+  countdown: CountdownSourceConfigSchema.default({}),
+  webhook: WebhookSourceConfigSchema.default({}),
 });
 export type SourcesConfig = z.infer<typeof SourcesConfigSchema>;
 
@@ -120,6 +271,8 @@ export const AppConfigSchema = z.object({
   version: z.literal(1).default(1),
   activeChannel: ChannelIdSchema.default('all'),
   display: DisplaySettingsSchema.default({}),
+  rotation: ChannelRotationConfigSchema.default({}),
+  filtering: FilterConfigSchema.default({}),
   sources: SourcesConfigSchema.default({}),
 });
 export type AppConfig = z.infer<typeof AppConfigSchema>;
@@ -127,12 +280,26 @@ export type AppConfig = z.infer<typeof AppConfigSchema>;
 export const PartialAppConfigSchema = z.object({
   activeChannel: ChannelIdSchema.optional(),
   display: DisplaySettingsSchema.partial().optional(),
+  rotation: ChannelRotationConfigSchema.partial().optional(),
+  filtering: z
+    .object({
+      muteKeywords: z.array(z.string().min(1).max(80)).optional(),
+      dedupeTitles: z.boolean().optional(),
+      weights: SourceWeightsSchema.partial().optional(),
+    })
+    .optional(),
   sources: z
     .object({
       rss: RssSourceConfigSchema.partial().optional(),
       wikipedia: WikipediaSourceConfigSchema.partial().optional(),
       weather: WeatherSourceConfigSchema.partial().optional(),
       mastodon: MastodonSourceConfigSchema.partial().optional(),
+      earthquake: EarthquakeSourceConfigSchema.partial().optional(),
+      transit: TransitSourceConfigSchema.partial().optional(),
+      market: MarketSourceConfigSchema.partial().optional(),
+      nowplaying: NowPlayingSourceConfigSchema.partial().optional(),
+      countdown: CountdownSourceConfigSchema.partial().optional(),
+      webhook: WebhookSourceConfigSchema.partial().optional(),
     })
     .optional(),
 });
@@ -147,11 +314,34 @@ export const TickerItemSchema = z.object({
   timestamp: z.number(),
   priority: z.enum(['normal', 'high']).default('normal'),
   oneShot: z.boolean().default(false),
+  breaking: z.boolean().default(false),
+  icon: PixelIconIdSchema.optional(),
   replaceKey: z.string().optional(),
   sourceKey: z.string().optional(),
   url: z.string().optional(),
 });
 export type TickerItem = z.infer<typeof TickerItemSchema>;
+
+export const NowPlayingStateSchema = z.object({
+  playing: z.boolean(),
+  title: z.string(),
+  artist: z.string().default(''),
+  album: z.string().default(''),
+  sourceApp: z.string().default(''),
+  updatedAt: z.number(),
+  levels: z.array(z.number().min(0).max(1)).max(32).optional(),
+});
+export type NowPlayingState = z.infer<typeof NowPlayingStateSchema>;
+
+export const NowPlayingPushInputSchema = z.object({
+  playing: z.boolean().default(true),
+  title: z.string().trim().min(1).max(160),
+  artist: z.string().trim().max(120).default(''),
+  album: z.string().trim().max(120).default(''),
+  sourceApp: z.string().trim().max(40).default('API'),
+  levels: z.array(z.number().min(0).max(1)).max(32).optional(),
+});
+export type NowPlayingPushInput = z.infer<typeof NowPlayingPushInputSchema>;
 
 export const ActivityBucketSchema = z.object({
   timestamp: z.number(),
@@ -175,6 +365,7 @@ export const ServerStateSchema = z.object({
   activity: z.array(ActivityBucketSchema),
   statuses: z.array(SourceStatusSchema),
   lanUrls: z.array(z.string()),
+  nowPlaying: NowPlayingStateSchema.nullable().default(null),
 });
 export type ServerState = z.infer<typeof ServerStateSchema>;
 
@@ -184,6 +375,8 @@ export const PushMessageInputSchema = z.object({
   color: z.string().trim().min(4).max(20).default('#ff66aa'),
   priority: z.enum(['normal', 'high']).default('high'),
   oneShot: z.boolean().default(true),
+  breaking: z.boolean().default(false),
+  icon: PixelIconIdSchema.optional(),
 });
 export type PushMessageInput = z.infer<typeof PushMessageInputSchema>;
 
@@ -195,5 +388,6 @@ export const WsMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('items:sync'), payload: z.array(TickerItemSchema) }),
   z.object({ type: z.literal('activity:update'), payload: z.array(ActivityBucketSchema) }),
   z.object({ type: z.literal('status:update'), payload: z.array(SourceStatusSchema) }),
+  z.object({ type: z.literal('nowplaying:update'), payload: NowPlayingStateSchema.nullable() }),
 ]);
 export type WsMessage = z.infer<typeof WsMessageSchema>;

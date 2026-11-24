@@ -9,18 +9,29 @@ import {
   type VfdPalette,
   type VisualMode,
 } from '@cathobar/shared';
-import { Monitor, SlidersHorizontal, Maximize2 } from 'lucide-react';
+import { Maximize2, Monitor, SlidersHorizontal } from 'lucide-react';
 import { TickerCanvas } from '../components/TickerCanvas.js';
 import type { EngineStats } from '../engine/ticker-engine.js';
 import { useCathobar } from '../hooks/useCathobar.js';
 
-const CHANNEL_ORDER: ChannelId[] = ['all', 'rss', 'wikipedia', 'weather', 'mastodon', 'clock'];
+const CHANNEL_ORDER: ChannelId[] = [
+  'all',
+  'rss',
+  'wikipedia',
+  'weather',
+  'mastodon',
+  'disaster',
+  'market',
+  'nowplaying',
+  'countdown',
+  'clock',
+];
 const MODE_ORDER: VisualMode[] = ['anobar8-vfd', 'anobar-fed', 'shinkansen-led', 'clean'];
 const PALETTE_ORDER: VfdPalette[] = ['cyan', 'green', 'white', 'amber'];
 const LAYOUT_ORDER: LayoutMode[] = ['auto', 'lanes', 'danmaku'];
 
 export function DisplayPage() {
-  const { connected, config, items, lastBatch, activity, updateConfig } = useCathobar();
+  const { connected, config, items, lastBatch, activity, nowPlaying, updateConfig } = useCathobar();
   const [hudVisible, setHudVisible] = useState(false);
   const [stats, setStats] = useState<EngineStats | null>(null);
   const hideTimer = useRef<number | null>(null);
@@ -49,8 +60,8 @@ export function DisplayPage() {
         return;
       }
       const key = e.key.toLowerCase();
-      if (key >= '1' && key <= '6') {
-        const idx = Number(key) - 1;
+      if ((key >= '1' && key <= '9') || key === '0') {
+        const idx = key === '0' ? 9 : Number(key) - 1;
         const nextCh = CHANNEL_ORDER[idx];
         if (nextCh) {
           void updateConfig({ activeChannel: nextCh });
@@ -74,6 +85,17 @@ export function DisplayPage() {
       } else if (key === 'g') {
         void updateConfig({ display: { showActivityGraph: !config.display.showActivityGraph } });
         showHudTemporarily();
+      } else if (key === 'r') {
+        void updateConfig({ rotation: { enabled: !config.rotation.enabled } });
+        showHudTemporarily();
+      } else if (key === 'i') {
+        void updateConfig({ display: { showPixelIcons: !config.display.showPixelIcons } });
+        showHudTemporarily();
+      } else if (key === 's') {
+        void updateConfig({
+          display: { showSpectrumAnalyzer: !config.display.showSpectrumAnalyzer },
+        });
+        showHudTemporarily();
       } else if (key === 'h') {
         setHudVisible((v) => !v);
       } else if (key === 'f') {
@@ -87,7 +109,7 @@ export function DisplayPage() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [config.display, showHudTemporarily, updateConfig]);
+  }, [config.display, config.rotation.enabled, showHudTemporarily, updateConfig]);
 
   return (
     <div
@@ -100,6 +122,7 @@ export function DisplayPage() {
         items={items}
         lastBatch={lastBatch}
         activity={activity}
+        nowPlaying={nowPlaying}
         onStats={setStats}
       />
 
@@ -115,20 +138,37 @@ export function DisplayPage() {
         }`}
       >
         <div className="flex flex-wrap items-center gap-1">
-          {CHANNEL_ORDER.map((ch, idx) => (
-            <button
-              key={ch}
-              type="button"
-              onClick={() => void updateConfig({ activeChannel: ch })}
-              className={`rounded px-2 py-0.5 text-xs font-medium transition ${
-                config.activeChannel === ch
-                  ? 'bg-cyan-500 text-slate-950'
-                  : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'
-              }`}
-            >
-              {idx + 1}:{CHANNEL_LABELS[ch].short}
-            </button>
-          ))}
+          {CHANNEL_ORDER.map((ch, idx) => {
+            const keyHint = idx === 9 ? '0' : String(idx + 1);
+            const isHighlighted =
+              stats?.rotating ? stats.effectiveChannel === ch : config.activeChannel === ch;
+            return (
+              <button
+                key={ch}
+                type="button"
+                onClick={() => void updateConfig({ activeChannel: ch })}
+                className={`rounded px-2 py-0.5 text-xs font-medium transition ${
+                  isHighlighted
+                    ? 'bg-cyan-500 text-slate-950'
+                    : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'
+                }`}
+              >
+                {keyHint}:{CHANNEL_LABELS[ch].short}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => void updateConfig({ rotation: { enabled: !config.rotation.enabled } })}
+            className={`rounded px-2 py-0.5 text-xs font-medium ${
+              config.rotation.enabled
+                ? 'bg-emerald-500 text-slate-950'
+                : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'
+            }`}
+            title="チャンネル自動ローテーション (R)"
+          >
+            R:ROT {config.rotation.enabled ? 'ON' : 'OFF'}
+          </button>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
