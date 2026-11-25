@@ -77,6 +77,7 @@ export function ControlTab({
       visualMode: config.display.visualMode,
       vfdPalette: config.display.vfdPalette,
       layoutMode: config.display.layoutMode,
+      screenLayout: config.display.screenLayout,
       brightness: config.display.brightness,
       showSpectrumAnalyzer: config.display.showSpectrumAnalyzer,
       showClockOverlay: config.display.showClockOverlay,

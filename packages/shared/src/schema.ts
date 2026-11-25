@@ -19,6 +19,9 @@ export type VfdPalette = z.infer<typeof VfdPaletteSchema>;
 export const LayoutModeSchema = z.enum(['auto', 'lanes', 'danmaku']);
 export type LayoutMode = z.infer<typeof LayoutModeSchema>;
 
+export const ScreenLayoutModeSchema = z.enum(['auto', 'bar', 'board', 'wall']);
+export type ScreenLayoutMode = z.infer<typeof ScreenLayoutModeSchema>;
+
 export const PixelIconIdSchema = z.enum([
   'sun',
   'partly-cloudy',
@@ -114,7 +117,10 @@ export const DisplaySettingsSchema = z.object({
   visualMode: VisualModeSchema.default('anobar8-vfd'),
   vfdPalette: VfdPaletteSchema.default('cyan'),
   layoutMode: LayoutModeSchema.default('auto'),
+  screenLayout: ScreenLayoutModeSchema.default('auto'),
   logicalHeight: z.number().int().min(48).max(240).default(96),
+  boardLogicalWidth: z.number().int().min(320).max(1280).default(640),
+  wallLanes: z.number().int().min(2).max(10).default(6),
   ledRows: z.number().int().min(16).max(48).default(24),
   shinkansenStyle: ShinkansenScrollStyleSchema.default('scroll'),
   lanes: z.number().int().min(1).max(4).default(2),
@@ -160,6 +166,7 @@ export const ScenePresetSchema = z.object({
   visualMode: VisualModeSchema.optional(),
   vfdPalette: VfdPaletteSchema.optional(),
   layoutMode: LayoutModeSchema.optional(),
+  screenLayout: ScreenLayoutModeSchema.optional(),
   brightness: z.number().min(0.2).max(2.0).optional(),
   showSpectrumAnalyzer: z.boolean().optional(),
   showClockOverlay: z.boolean().optional(),

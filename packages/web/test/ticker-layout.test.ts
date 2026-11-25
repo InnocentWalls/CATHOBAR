@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, evaluateNightMode, type TickerItem } from '@cathobar/shared';
+import { computeScreenRegions, wrapTextLines } from '../src/engine/board-renderer.js';
 import { resolveItemIcon } from '../src/engine/pixel-icons.js';
 import { generateQrMatrix, renderQrSvg } from '../src/engine/qrcode.js';
 import {
   computeEffectiveChannel,
   computeEdgeAlpha,
   computeLogicalSize,
+  computeRenderScale,
+  computeScreenLogicalSize,
   computeStationBadgeWidth,
+  resolveEffectiveScreenLayout,
   TickerLayoutEngine,
 } from '../src/engine/ticker-layout.js';
 
@@ -562,5 +566,248 @@ describe('Night mode, split-flap, station-board, pause nudge & QR code', () => {
     expect(svg).toContain('width="160"');
     expect(svg).toContain(`viewBox="0 0 ${matrix.length + 8} ${matrix.length + 8}"`);
     expect(computeStationBadgeWidth(320)).toBeGreaterThanOrEqual(60);
+  });
+});
+
+describe('Standard 16:9 / 4K full-screen layout support', () => {
+  const measure = (text: string, size: number, weight = 500) =>
+    text.length * size * (weight >= 700 ? 0.68 : 0.6);
+
+  it('resolves effective screen layout automatically by aspect ratio and honors explicit overrides', () => {
+    expect(resolveEffectiveScreenLayout('auto', 1920, 1080)).toBe('board');
+    expect(resolveEffectiveScreenLayout('auto', 3840, 2160)).toBe('board');
+    expect(resolveEffectiveScreenLayout('auto', 1920, 1200)).toBe('board');
+    expect(resolveEffectiveScreenLayout('auto', 1920, 480)).toBe('bar');
+    expect(resolveEffectiveScreenLayout('auto', 1280, 400)).toBe('bar');
+    expect(resolveEffectiveScreenLayout('wall', 1920, 1080)).toBe('wall');
+    expect(resolveEffectiveScreenLayout('bar', 1920, 1080)).toBe('bar');
+    expect(resolveEffectiveScreenLayout('board', 1920, 480)).toBe('board');
+  });
+
+  it('computes balanced aspect-preserving logical grids for FHD, 4K, Shinkansen LED, and portrait', () => {
+    expect(
+      computeScreenLogicalSize(1920, 1080, 'board', {
+        visualMode: 'anobar8-vfd',
+        logicalHeight: 96,
+        ledRows: 24,
+        boardLogicalWidth: 640,
+      }),
+    ).toEqual({ width: 640, height: 360 });
+
+    expect(
+      computeScreenLogicalSize(3840, 2160, 'wall', {
+        visualMode: 'clean',
+        logicalHeight: 96,
+        ledRows: 24,
+        boardLogicalWidth: 640,
+      }),
+    ).toEqual({ width: 640, height: 360 });
+
+    expect(
+      computeScreenLogicalSize(1920, 1080, 'board', {
+        visualMode: 'shinkansen-led',
+        logicalHeight: 96,
+        ledRows: 24,
+        boardLogicalWidth: 640,
+      }),
+    ).toEqual({ width: 240, height: 135 });
+
+    // Portrait 1080x1920 clamps height safely without distortion
+    const portrait = computeScreenLogicalSize(1080, 1920, 'board', {
+      visualMode: 'anobar8-vfd',
+      logicalHeight: 96,
+      ledRows: 24,
+      boardLogicalWidth: 640,
+    });
+    expect(portrait.height).toBeLessThanOrEqual(960);
+    expect(portrait.width / portrait.height).toBeCloseTo(1080 / 1920, 1);
+
+    // Classic ultrawide 'bar' mode matches legacy computeLogicalSize
+    expect(
+      computeScreenLogicalSize(1920, 480, 'bar', {
+        visualMode: 'anobar8-vfd',
+        logicalHeight: 96,
+        ledRows: 24,
+        boardLogicalWidth: 640,
+      }),
+    ).toEqual({ width: 384, height: 96 });
+  });
+
+  it('computes non-overlapping regions for board, wall, split-flap, and clock modes', () => {
+    const boardRegions = computeScreenRegions(640, 360, 'board', DEFAULT_CONFIG.display, 'all');
+    expect(boardRegions.showMiddleBoard).toBe(true);
+    expect(
+      boardRegions.headerRect.h +
+        boardRegions.bodyRect.h +
+        boardRegions.tickerRect.h +
+        boardRegions.graphRect.h,
+    ).toBe(360);
+
+    const wallRegions = computeScreenRegions(640, 360, 'wall', DEFAULT_CONFIG.display, 'all');
+    expect(wallRegions.showMiddleBoard).toBe(false);
+    expect(wallRegions.effectiveTickerLanes).toBe(6);
+    expect(
+      wallRegions.headerRect.h + wallRegions.tickerRect.h + wallRegions.graphRect.h,
+    ).toBe(360);
+
+    const flapBoardRegions = computeScreenRegions(
+      640,
+      360,
+      'board',
+      { ...DEFAULT_CONFIG.display, visualMode: 'split-flap' },
+      'all',
+    );
+    expect(flapBoardRegions.showMiddleBoard).toBe(false);
+    expect(flapBoardRegions.effectiveTickerMaxRows).toBeGreaterThanOrEqual(4);
+
+    const clockRegions = computeScreenRegions(640, 360, 'board', DEFAULT_CONFIG.display, 'clock');
+    expect(clockRegions.tickerRect.h).toBe(0);
+    expect(clockRegions.bodyRect.h).toBeGreaterThan(300);
+  });
+
+  it('supports multi-row split-flap, station-board, shinkansen-led, and tall danmaku walls', () => {
+    const sampleItems: TickerItem[] = Array.from({ length: 10 }, (_, idx) => ({
+      id: `item-${idx}`,
+      source: 'rss',
+      badge: 'NEWS',
+      text: `マルチ行テストニュース項目 ${idx + 1}`,
+      color: '#38bdf8',
+      timestamp: 1000 + idx,
+      priority: 'normal',
+      oneShot: false,
+      breaking: false,
+    }));
+
+    // 6-row split-flap wall
+    const flapEngine = new TickerLayoutEngine();
+    flapEngine.setPool(sampleItems, 'all');
+    flapEngine.step({
+      dtSec: 0.2,
+      tickerWidth: 640,
+      tickerHeight: 280,
+      logicalHeight: 360,
+      lanes: 6,
+      maxRows: 6,
+      layoutMode: 'lanes',
+      visualMode: 'split-flap',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 72,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(flapEngine.getSplitFlapRows()).toHaveLength(6);
+
+    // 6-row station-board wall
+    const stationEngine = new TickerLayoutEngine();
+    stationEngine.setPool(sampleItems, 'all');
+    const stationSpans = stationEngine.step({
+      dtSec: 0.016,
+      tickerWidth: 640,
+      tickerHeight: 280,
+      logicalHeight: 360,
+      lanes: 6,
+      maxRows: 6,
+      layoutMode: 'lanes',
+      visualMode: 'station-board',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 72,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(stationSpans).toHaveLength(6);
+    expect(new Set(stationSpans.map((s) => s.lane)).size).toBe(6);
+
+    // 3-lane Shinkansen LED wall
+    const ledEngine = new TickerLayoutEngine();
+    ledEngine.setPool(sampleItems, 'all');
+    const ledSpans = ledEngine.step({
+      dtSec: 0.016,
+      tickerWidth: 240,
+      tickerHeight: 110,
+      logicalHeight: 135,
+      lanes: 3,
+      maxRows: 3,
+      layoutMode: 'lanes',
+      visualMode: 'shinkansen-led',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 72,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(ledSpans).toHaveLength(3);
+
+    // Tall danmaku fills >8 vertical slots
+    const danmakuEngine = new TickerLayoutEngine();
+    danmakuEngine.setPool(sampleItems, 'all');
+    for (let i = 0; i < 4; i += 1) {
+      danmakuEngine.step({
+        dtSec: 0.4,
+        tickerWidth: 640,
+        tickerHeight: 280,
+        logicalHeight: 360,
+        lanes: 6,
+        layoutMode: 'danmaku',
+        visualMode: 'anobar8-vfd',
+        shinkansenStyle: 'scroll',
+        activeChannel: 'all',
+        scrollSpeed: 120,
+        showBadge: true,
+        measureText: measure,
+      });
+    }
+    const tallDanmaku = danmakuEngine.step({
+      dtSec: 0.1,
+      tickerWidth: 640,
+      tickerHeight: 280,
+      logicalHeight: 360,
+      lanes: 6,
+      layoutMode: 'danmaku',
+      visualMode: 'anobar8-vfd',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 120,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(new Set(tallDanmaku.map((s) => s.lane)).size).toBeGreaterThan(8);
+  });
+
+  it('wraps Japanese and ASCII alert text into bounded lines', () => {
+    const lines = wrapTextLines(
+      '緊急地震速報テスト：東京23区・関東南部で強い揺れに警戒してください。身の安全を確保してください。',
+      180,
+      (s) => s.length * 12,
+      4,
+    );
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    expect(lines.length).toBeLessThanOrEqual(4);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(16);
+    }
+  });
+
+  it('caps clean and split-flap backing dimensions at Full HD on 4K while preserving supersampling', () => {
+    // 4K 16:9 board/wall (640x360) -> scale 3 (1920x1080)
+    const cleanWallScale = computeRenderScale(2160, 640, 360, 'clean', 'wall');
+    expect(cleanWallScale).toBe(3);
+    expect(640 * cleanWallScale).toBeLessThanOrEqual(1920);
+    expect(360 * cleanWallScale).toBeLessThanOrEqual(1080);
+
+    // 4K 16:9 bar (171x96) -> scale 4 (684x384), preventing giant 4K glyph tessellation
+    const cleanBarScale = computeRenderScale(2160, 171, 96, 'clean', 'bar');
+    expect(cleanBarScale).toBe(4);
+    expect(171 * cleanBarScale).toBeLessThanOrEqual(1920);
+    expect(96 * cleanBarScale).toBeLessThanOrEqual(1080);
+
+    // Wide logical width (960x540) -> scale 2 (1920x1080)
+    expect(computeRenderScale(2160, 960, 540, 'split-flap', 'board')).toBe(2);
+
+    // Shinkansen LED and bar VFD/FED remain 1x logical grid
+    expect(computeRenderScale(2160, 240, 135, 'shinkansen-led', 'wall')).toBe(1);
+    expect(computeRenderScale(480, 384, 96, 'anobar8-vfd', 'bar')).toBe(1);
+    expect(computeRenderScale(2160, 640, 360, 'anobar8-vfd', 'wall')).toBe(2);
   });
 });

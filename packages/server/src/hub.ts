@@ -247,6 +247,7 @@ export class TickerHub {
     if (scene.visualMode !== undefined) displayPatch.visualMode = scene.visualMode;
     if (scene.vfdPalette !== undefined) displayPatch.vfdPalette = scene.vfdPalette;
     if (scene.layoutMode !== undefined) displayPatch.layoutMode = scene.layoutMode;
+    if (scene.screenLayout !== undefined) displayPatch.screenLayout = scene.screenLayout;
     if (scene.brightness !== undefined) displayPatch.brightness = scene.brightness;
     if (scene.showSpectrumAnalyzer !== undefined) {
       displayPatch.showSpectrumAnalyzer = scene.showSpectrumAnalyzer;

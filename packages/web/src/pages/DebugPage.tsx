@@ -3,11 +3,13 @@ import {
   CHANNEL_LABELS,
   LAYOUT_MODE_LABELS,
   RESOLUTION_PRESETS,
+  SCREEN_LAYOUT_LABELS,
   SHINKANSEN_STYLE_LABELS,
   VFD_PALETTES,
   VISUAL_MODE_LABELS,
   type ChannelId,
   type LayoutMode,
+  type ScreenLayoutMode,
   type ShinkansenScrollStyle,
   type VfdPalette,
   type VisualMode,
@@ -50,7 +52,10 @@ export function DebugPage() {
     return () => ro.disconnect();
   }, []);
 
-  const scale = zoomMode === 'auto' ? Math.min(1, containerW / simWidth) : zoomMode;
+  const scale =
+    zoomMode === 'auto'
+      ? Math.min(1, containerW / simWidth, 620 / Math.max(1, simHeight))
+      : zoomMode;
   const scaledW = Math.round(simWidth * scale);
   const scaledH = Math.round(simHeight * scale);
   const aspect = (simWidth / Math.max(1, simHeight)).toFixed(2);
@@ -194,7 +199,7 @@ export function DebugPage() {
               <input
                 type="number"
                 min={48}
-                max={1440}
+                max={2160}
                 value={simHeight}
                 onChange={(e) => setSimHeight(Math.max(48, Number(e.target.value) || 48))}
                 className="w-24 rounded border border-slate-700 bg-slate-950 px-2 py-1 font-mono"
@@ -264,7 +269,8 @@ export function DebugPage() {
               </span>
               {stats && (
                 <span>
-                  LOGICAL GRID: {stats.logicalWidth}×{stats.logicalHeight} |{' '}
+                  [{stats.effectiveScreenLayout.toUpperCase()}] LOGICAL GRID: {stats.logicalWidth}×
+                  {stats.logicalHeight} |{' '}
                   {stats.rotating ? `ROT:${stats.effectiveChannel}` : stats.effectiveChannel} |{' '}
                   {stats.fps} FPS | {stats.backend.toUpperCase()}
                 </span>
@@ -288,6 +294,21 @@ export function DebugPage() {
                 }`}
               >
                 {VISUAL_MODE_LABELS[mode].label}
+              </button>
+            ))}
+
+            {(Object.keys(SCREEN_LAYOUT_LABELS) as ScreenLayoutMode[]).map((sl) => (
+              <button
+                key={sl}
+                type="button"
+                onClick={() => void updateConfig({ display: { screenLayout: sl } })}
+                className={`rounded border px-2.5 py-1 text-xs ${
+                  config.display.screenLayout === sl
+                    ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                    : 'border-slate-800 bg-slate-950 text-slate-400'
+                }`}
+              >
+                {SCREEN_LAYOUT_LABELS[sl].label}
               </button>
             ))}
 

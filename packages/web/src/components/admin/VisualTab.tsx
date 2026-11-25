@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
   LAYOUT_MODE_LABELS,
+  SCREEN_LAYOUT_LABELS,
   SHINKANSEN_STYLE_LABELS,
   VFD_PALETTES,
   VISUAL_MODE_LABELS,
@@ -8,6 +9,7 @@ import {
   type LayoutMode,
   type NightModeBehavior,
   type PartialAppConfig,
+  type ScreenLayoutMode,
   type ShinkansenScrollStyle,
   type SpectrumAudioInput,
   type VfdPalette,
@@ -58,6 +60,31 @@ export function VisualTab({ config, baseHost, updateConfig }: VisualTabProps) {
               </div>
             </button>
           ))}
+        </div>
+
+        <div>
+          <div className="mb-1.5 text-xs text-slate-400">
+            画面レイアウト（横長バー / 16:9 フルHD・4K全面表示）
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {(Object.keys(SCREEN_LAYOUT_LABELS) as ScreenLayoutMode[]).map((sl) => (
+              <button
+                key={sl}
+                type="button"
+                onClick={() => void updateConfig({ display: { screenLayout: sl } })}
+                className={`rounded-lg border p-2 text-left transition ${
+                  config.display.screenLayout === sl
+                    ? 'border-emerald-400 bg-emerald-500/15 text-white'
+                    : 'border-slate-800 bg-slate-900 text-slate-300 hover:border-slate-700'
+                }`}
+              >
+                <div className="text-xs font-semibold">{SCREEN_LAYOUT_LABELS[sl].label}</div>
+                <div className="mt-0.5 text-[10px] leading-snug text-slate-400">
+                  {SCREEN_LAYOUT_LABELS[sl].description}
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
 
         <div>
@@ -181,12 +208,28 @@ export function VisualTab({ config, baseHost, updateConfig }: VisualTabProps) {
             onChange={(v) => void updateConfig({ display: { lanes: v } })}
           />
           <SliderField
-            label="縦ドット解像度 (px)"
+            label="縦ドット解像度 (バー用 px)"
             value={config.display.logicalHeight}
             min={48}
             max={192}
             step={8}
             onChange={(v) => void updateConfig({ display: { logicalHeight: v } })}
+          />
+          <SliderField
+            label="16:9 基準横ドット数 (px)"
+            value={config.display.boardLogicalWidth}
+            min={384}
+            max={960}
+            step={32}
+            onChange={(v) => void updateConfig({ display: { boardLogicalWidth: v } })}
+          />
+          <SliderField
+            label="ティッカー壁 行数 (Wall)"
+            value={config.display.wallLanes}
+            min={2}
+            max={10}
+            step={1}
+            onChange={(v) => void updateConfig({ display: { wallLanes: v } })}
           />
           <SliderField
             label="輝度 (Brightness)"
@@ -444,7 +487,7 @@ export function VisualTab({ config, baseHost, updateConfig }: VisualTabProps) {
             </button>
           </div>
           <p className="text-[11px] text-slate-400">
-            OBS のブラウザソースに貼り付けると背景透過・HUD非表示で動作します（<code>&amp;channel=rss</code> 等も指定可）。
+            OBS のブラウザソースに貼り付けると背景透過・HUD非表示で動作します（<code>&amp;channel=rss</code> や <code>&amp;screen=bar</code> / <code>&amp;screen=board</code> も指定可）。
           </p>
         </div>
       </section>

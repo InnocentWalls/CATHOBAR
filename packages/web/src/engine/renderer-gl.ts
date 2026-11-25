@@ -29,6 +29,7 @@ precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_tex;
 uniform vec2 u_logicalSize;
+uniform vec2 u_viewportSize;
 uniform vec3 u_vfdColor;
 uniform int u_mode; // 0=anobar8-vfd, 1=anobar-fed, 2=clean, 3=shinkansen-led, 4=split-flap, 5=station-board
 uniform float u_brightness;
@@ -53,6 +54,22 @@ vec3 sampleGlow(sampler2D tex, vec2 uv, vec2 px) {
   return acc / 6.8;
 }
 
+vec3 sampleGlowFast(sampler2D tex, vec2 uv, vec2 px) {
+  vec3 acc = vec3(0.0);
+  acc += texture(tex, uv + vec2( px.x,  0.0)).rgb;
+  acc += texture(tex, uv + vec2(-px.x,  0.0)).rgb;
+  acc += texture(tex, uv + vec2( 0.0,  px.y)).rgb;
+  acc += texture(tex, uv + vec2( 0.0, -px.y)).rgb;
+  return acc * 0.25;
+}
+
+vec3 sampleDualBloom(sampler2D tex, vec2 uv, vec2 px) {
+  if (u_bloom <= 0.001) return vec3(0.0);
+  vec3 glowNear = sampleGlow(tex, uv, px * 1.15);
+  vec3 glowWide = sampleGlow(tex, uv, px * 2.4);
+  return glowNear * 0.65 + glowWide * 0.35;
+}
+
 float dotMatrixMask(vec2 uv, vec2 grid, float intensity) {
   if (intensity <= 0.001) return 1.0;
   vec2 cell = fract(uv * grid);
@@ -69,40 +86,47 @@ float vfdAnodeMesh(vec2 uv, vec2 grid, float intensity) {
   vec2 hexUv = vec2(cell.x + mod(row, 2.0) * 0.5, cell.y);
   vec2 f = fract(hexUv) - 0.5;
   float wire = smoothstep(0.38, 0.49, abs(f.x) + abs(f.y) * 0.65);
-  float filament = 1.0 - 0.14 * (1.0 - smoothstep(0.0, 0.012, abs(fract(uv.y * 4.0) - 0.5)));
+  float filamentRows = clamp(floor(grid.y / 30.0 + 0.5), 3.0, 12.0);
+  float filamentHalfW = clamp(0.55 / max(grid.y / filamentRows, 1.0), 0.004, 0.024);
+  float filament = 1.0 - 0.14 * (1.0 - smoothstep(0.0, filamentHalfW, abs(fract(uv.y * filamentRows) - 0.5)));
   float meshDarken = mix(1.0, 1.0 - 0.28 * wire, intensity);
   return meshDarken * mix(1.0, filament, intensity);
 }
 
-vec3 vfdGlassEffect(vec2 uv, float glassStrength) {
+vec3 vfdGlassEffect(vec2 uv, float glassStrength, vec2 logicalSize) {
   if (glassStrength <= 0.001) return vec3(0.0);
+  float aspect = logicalSize.x / max(logicalSize.y, 1.0);
+  float rimSpan = mix(0.08, 0.14, clamp((aspect - 1.6) / 3.0, 0.0, 1.0));
   float diag = smoothstep(0.35, 0.0, abs((uv.x * 0.45 + uv.y) - 1.15));
-  float topRim = smoothstep(0.14, 0.0, 1.0 - uv.y) * 0.55;
+  float topRim = smoothstep(rimSpan, 0.0, 1.0 - uv.y) * 0.55;
   return vec3(0.11, 0.16, 0.18) * (diag * 0.24 + topRim * 0.35) * glassStrength;
 }
 
-float tubeVignette(vec2 uv, float glassStrength) {
+float tubeVignette(vec2 uv, float glassStrength, vec2 logicalSize) {
   vec2 centered = (uv - 0.5) * 2.0;
-  float edgeDist = dot(centered * vec2(0.45, 0.85), centered * vec2(0.45, 0.85));
+  float aspect = logicalSize.x / max(logicalSize.y, 1.0);
+  float vx = mix(0.72, 0.45, clamp((aspect - 1.6) / 3.0, 0.0, 1.0));
+  float edgeDist = dot(centered * vec2(vx, 0.85), centered * vec2(vx, 0.85));
   return mix(1.0, 1.0 - clamp(edgeDist * 0.28, 0.0, 0.38), glassStrength);
 }
 
 void main() {
-  vec2 px = 1.0 / max(u_logicalSize, vec2(1.0));
+  vec2 safeLogical = max(u_logicalSize, vec2(1.0));
+  vec2 px = 1.0 / safeLogical;
+  vec2 pxPerCell = max(u_viewportSize, vec2(1.0)) / safeLogical;
+  float cellAa = smoothstep(1.1, 2.5, min(pxPerCell.x, pxPerCell.y));
   vec2 shiftedUv = clamp(v_uv + u_pixelShift * px, vec2(0.0), vec2(1.0));
 
   vec4 rawSample = texture(u_tex, shiftedUv);
   vec3 base = rawSample.rgb;
-  vec3 glowNear = sampleGlow(u_tex, shiftedUv, px * 1.15);
-  vec3 glowWide = sampleGlow(u_tex, shiftedUv, px * 2.4);
-  vec3 bloomVec = glowNear * 0.65 + glowWide * 0.35;
 
   if (u_mode == 0) {
     // ANOBAR8 VFD 16-level monochrome quantization + mesh grid + glass sheen
     float luma = dot(base, vec3(0.299, 0.587, 0.114));
     float q = floor(clamp(luma * u_brightness, 0.0, 1.0) * 15.0 + 0.5) / 15.0;
-    float mask = dotMatrixMask(shiftedUv, u_logicalSize, u_dotIntensity);
-    float mesh = vfdAnodeMesh(shiftedUv, u_logicalSize, u_vfdGrid);
+    float mask = dotMatrixMask(shiftedUv, safeLogical, u_dotIntensity * cellAa);
+    float mesh = vfdAnodeMesh(shiftedUv, safeLogical, u_vfdGrid * cellAa);
+    vec3 bloomVec = sampleDualBloom(u_tex, shiftedUv, px);
     float bloomLuma = dot(bloomVec, vec3(0.299, 0.587, 0.114));
     vec3 lit = u_vfdColor * q * mask * mesh;
     vec3 halo = u_vfdColor * bloomLuma * u_bloom * u_brightness;
@@ -112,14 +136,14 @@ void main() {
       return;
     }
     vec3 unlitMesh = u_vfdColor * (0.018 + 0.014 * mask * mesh);
-    vec3 glass = vfdGlassEffect(v_uv, u_glass);
-    float vig = tubeVignette(v_uv, u_glass);
+    vec3 glass = vfdGlassEffect(v_uv, u_glass, safeLogical);
+    float vig = tubeVignette(v_uv, u_glass, safeLogical);
     outColor = vec4(clamp((unlitMesh + lit + halo) * vig + glass, 0.0, 1.0), 1.0);
   } else if (u_mode == 1) {
     // Original ANOBAR FED full-color self-luminous dot matrix
-    float mask = dotMatrixMask(shiftedUv, u_logicalSize, u_dotIntensity);
+    float mask = dotMatrixMask(shiftedUv, safeLogical, u_dotIntensity * cellAa);
     vec3 lit = base * u_brightness * mask;
-    vec3 halo = bloomVec * u_bloom * u_brightness;
+    vec3 halo = sampleDualBloom(u_tex, shiftedUv, px) * u_bloom * u_brightness;
     if (u_transparent == 1) {
       float alpha = clamp(max(rawSample.a, dot(halo, vec3(0.333))), 0.0, 1.0);
       outColor = vec4(clamp(lit + halo, 0.0, 1.0), alpha);
@@ -129,18 +153,18 @@ void main() {
     outColor = vec4(clamp(unlitMesh + lit + halo, 0.0, 1.0), 1.0);
   } else if (u_mode == 3) {
     // Tohoku Shinkansen 3-color circular LED dot matrix
-    vec2 cellUv = (floor(shiftedUv * u_logicalSize) + 0.5) / max(u_logicalSize, vec2(1.0));
+    vec2 cellUv = (floor(shiftedUv * safeLogical) + 0.5) / safeLogical;
     vec4 cellSample = texture(u_tex, cellUv);
     vec3 cellBase = cellSample.rgb;
-    vec2 cellPos = fract(shiftedUv * u_logicalSize) - 0.5;
+    vec2 cellPos = fract(shiftedUv * safeLogical) - 0.5;
     float radius = length(cellPos);
     float ledDisc = 1.0 - smoothstep(0.30, 0.47, radius);
     float ledCore = 1.0 - smoothstep(0.0, 0.28, radius);
-    float ledMask = mix(1.0, ledDisc, max(0.35, u_dotIntensity));
+    float ledMask = mix(1.0, ledDisc, max(0.35, u_dotIntensity) * cellAa);
     float luma = dot(cellBase, vec3(0.299, 0.587, 0.114));
     vec3 quantized = step(0.18, luma) * cellBase;
     vec3 lit = quantized * u_brightness * (0.85 + 0.4 * ledCore) * ledMask;
-    vec3 halo = bloomVec * u_bloom * 0.65 * u_brightness;
+    vec3 halo = sampleDualBloom(u_tex, shiftedUv, px) * u_bloom * 0.65 * u_brightness;
     if (u_transparent == 1) {
       float alpha = clamp(max(step(0.18, luma) * ledDisc, dot(halo, vec3(0.333))), 0.0, 1.0);
       outColor = vec4(clamp(lit + halo, 0.0, 1.0), alpha);
@@ -149,9 +173,9 @@ void main() {
     vec3 housing = vec3(0.022, 0.024, 0.024) + vec3(0.028, 0.030, 0.028) * ledDisc;
     outColor = vec4(clamp(housing + lit + halo, 0.0, 1.0), 1.0);
   } else if (u_mode == 4) {
-    // Mechanical Split-Flap board
+    // Mechanical Split-Flap board (no bloom taps needed)
     vec3 lit = base * mix(0.85, 1.18, clamp((u_brightness - 0.4) / 1.4, 0.0, 1.0));
-    float vig = tubeVignette(v_uv, u_glass * 0.5);
+    float vig = tubeVignette(v_uv, u_glass * 0.5, safeLogical);
     if (u_transparent == 1) {
       outColor = vec4(clamp(lit, 0.0, 1.0), rawSample.a);
       return;
@@ -159,9 +183,9 @@ void main() {
     outColor = vec4(clamp(lit * vig, 0.0, 1.0), 1.0);
   } else if (u_mode == 5) {
     // Station Departure Board (2-column fine LED)
-    float mask = dotMatrixMask(shiftedUv, u_logicalSize, u_dotIntensity * 0.75);
+    float mask = dotMatrixMask(shiftedUv, safeLogical, u_dotIntensity * 0.75 * cellAa);
     vec3 lit = base * u_brightness * mask;
-    vec3 halo = bloomVec * (u_bloom * 0.45) * u_brightness;
+    vec3 halo = sampleDualBloom(u_tex, shiftedUv, px) * (u_bloom * 0.45) * u_brightness;
     if (u_transparent == 1) {
       float alpha = clamp(max(rawSample.a, dot(halo, vec3(0.333))), 0.0, 1.0);
       outColor = vec4(clamp(lit + halo, 0.0, 1.0), alpha);
@@ -170,9 +194,11 @@ void main() {
     vec3 housing = vec3(0.015, 0.018, 0.022) * mask;
     outColor = vec4(clamp(housing + lit + halo, 0.0, 1.0), 1.0);
   } else {
-    // Clean modern display
+    // Clean modern display (fast 4-tap glow only when bloom > 0)
     vec3 lit = base * mix(0.85, 1.15, clamp((u_brightness - 0.5) / 1.5, 0.0, 1.0));
-    vec3 halo = bloomVec * (u_bloom * 0.25);
+    vec3 halo = u_bloom > 0.001
+      ? sampleGlowFast(u_tex, shiftedUv, px * 1.4) * (u_bloom * 0.25)
+      : vec3(0.0);
     if (u_transparent == 1) {
       float alpha = clamp(max(rawSample.a, dot(halo, vec3(0.333))), 0.0, 1.0);
       outColor = vec4(clamp(lit + halo, 0.0, 1.0), alpha);
@@ -192,6 +218,7 @@ interface PersistUniforms {
 interface DisplayUniforms {
   u_tex: WebGLUniformLocation | null;
   u_logicalSize: WebGLUniformLocation | null;
+  u_viewportSize: WebGLUniformLocation | null;
   u_vfdColor: WebGLUniformLocation | null;
   u_mode: WebGLUniformLocation | null;
   u_brightness: WebGLUniformLocation | null;
@@ -219,6 +246,7 @@ export class RendererGL {
   private fboWidth = 0;
   private fboHeight = 0;
   private pingIndex = 0;
+  private usedPersistenceLastFrame = false;
   private contextLost = false;
   private readonly onContextLost: (e: Event) => void;
   private readonly onContextRestored: () => void;
@@ -268,6 +296,7 @@ export class RendererGL {
     this.displayUniforms = {
       u_tex: gl.getUniformLocation(this.displayProgram, 'u_tex'),
       u_logicalSize: gl.getUniformLocation(this.displayProgram, 'u_logicalSize'),
+      u_viewportSize: gl.getUniformLocation(this.displayProgram, 'u_viewportSize'),
       u_vfdColor: gl.getUniformLocation(this.displayProgram, 'u_vfdColor'),
       u_mode: gl.getUniformLocation(this.displayProgram, 'u_mode'),
       u_brightness: gl.getUniformLocation(this.displayProgram, 'u_brightness'),
@@ -336,9 +365,6 @@ export class RendererGL {
       this.canvas.height = viewportHeight;
     }
 
-    this.ensureFbos(sourceCanvas.width, sourceCanvas.height);
-    if (!this.fboTextures || !this.fbos) return;
-
     gl.bindTexture(gl.TEXTURE_2D, this.srcTexture);
     if (this.srcTexWidth === sourceCanvas.width && this.srcTexHeight === sourceCanvas.height) {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
@@ -348,26 +374,6 @@ export class RendererGL {
       this.srcTexHeight = sourceCanvas.height;
     }
 
-    const readIdx = this.pingIndex;
-    const writeIdx = 1 - this.pingIndex;
-    const writeFbo = this.fbos[writeIdx]!;
-    const readTex = this.fboTextures[readIdx]!;
-    const writeTex = this.fboTextures[writeIdx]!;
-
-    // Pass 1: persistence blend into write FBO (normalized to 60fps reference)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, writeFbo);
-    gl.viewport(0, 0, this.fboWidth, this.fboHeight);
-    gl.useProgram(this.persistProgram);
-    gl.bindVertexArray(this.vao);
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.srcTexture);
-    gl.uniform1i(this.persistUniforms.u_current, 0);
-
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, readTex);
-    gl.uniform1i(this.persistUniforms.u_prev, 1);
-
     const baseDecay =
       display.visualMode === 'clean' || display.visualMode === 'split-flap'
         ? 0
@@ -376,10 +382,42 @@ export class RendererGL {
           : display.persistence * 0.72;
     const frameScale = Math.max(0.1, Math.min(4, dtSec * 60));
     const decay = baseDecay > 0 ? Math.pow(baseDecay, frameScale) : 0;
-    gl.uniform1f(this.persistUniforms.u_decay, decay);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-    this.pingIndex = writeIdx;
+    let displayTex: WebGLTexture = this.srcTexture;
+
+    if (decay > 0.001) {
+      this.ensureFbos(sourceCanvas.width, sourceCanvas.height);
+      if (!this.fboTextures || !this.fbos) return;
+
+      const readIdx = this.pingIndex;
+      const writeIdx = 1 - this.pingIndex;
+      const writeFbo = this.fbos[writeIdx]!;
+      const readTex = this.fboTextures[readIdx]!;
+      const writeTex = this.fboTextures[writeIdx]!;
+
+      // Pass 1: persistence blend into write FBO (normalized to 60fps reference)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, writeFbo);
+      gl.viewport(0, 0, this.fboWidth, this.fboHeight);
+      gl.useProgram(this.persistProgram);
+      gl.bindVertexArray(this.vao);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.srcTexture);
+      gl.uniform1i(this.persistUniforms.u_current, 0);
+
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, readTex);
+      gl.uniform1i(this.persistUniforms.u_prev, 1);
+
+      gl.uniform1f(this.persistUniforms.u_decay, this.usedPersistenceLastFrame ? decay : 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      this.pingIndex = writeIdx;
+      this.usedPersistenceLastFrame = true;
+      displayTex = writeTex;
+    } else {
+      this.usedPersistenceLastFrame = false;
+    }
 
     // Pass 2: composite to screen
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -389,11 +427,13 @@ export class RendererGL {
       gl.clear(gl.COLOR_BUFFER_BIT);
     }
     gl.useProgram(this.displayProgram);
+    gl.bindVertexArray(this.vao);
 
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, writeTex);
+    gl.bindTexture(gl.TEXTURE_2D, displayTex);
     gl.uniform1i(this.displayUniforms.u_tex, 0);
     gl.uniform2f(this.displayUniforms.u_logicalSize, logicalWidth, logicalHeight);
+    gl.uniform2f(this.displayUniforms.u_viewportSize, viewportWidth, viewportHeight);
 
     const paletteRgb = VFD_PALETTES[display.vfdPalette]?.rgb ?? VFD_PALETTES.cyan.rgb;
     gl.uniform3f(this.displayUniforms.u_vfdColor, paletteRgb[0], paletteRgb[1], paletteRgb[2]);

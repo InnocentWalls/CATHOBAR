@@ -499,6 +499,47 @@ export function resolveItemIcon(item: TickerItem): PixelIconId {
   }
 }
 
+const MAX_ICON_CACHE = 128;
+const iconSpriteCache = new Map<string, HTMLCanvasElement>();
+
+function getCachedIconSprite(
+  iconId: PixelIconId,
+  pattern: Pattern16,
+  primaryColor: string,
+  accentColor: string,
+): HTMLCanvasElement | null {
+  if (typeof document === 'undefined') return null;
+  const key = `${iconId}|${primaryColor}|${accentColor}`;
+  const cached = iconSpriteCache.get(key);
+  if (cached) return cached;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 16;
+  canvas.height = 16;
+  const sctx = canvas.getContext('2d');
+  if (!sctx) return null;
+
+  for (let row = 0; row < 16; row += 1) {
+    const line = pattern[row];
+    if (!line) continue;
+    for (let col = 0; col < 16; col += 1) {
+      const ch = line[col];
+      if (ch !== '#' && ch !== '+') continue;
+      sctx.fillStyle = ch === '+' ? accentColor : primaryColor;
+      sctx.fillRect(col, row, 1, 1);
+    }
+  }
+
+  if (iconSpriteCache.size >= MAX_ICON_CACHE) {
+    const oldestKey = iconSpriteCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      iconSpriteCache.delete(oldestKey);
+    }
+  }
+  iconSpriteCache.set(key, canvas);
+  return canvas;
+}
+
 /**
  * Draws a 16x16 bitmap pixel icon aligned vertically around centerY.
  */
@@ -513,7 +554,6 @@ export function drawPixelIcon(
   isHighPriority: boolean,
 ): void {
   const pattern = PIXEL_ICON_PATTERNS[iconId] ?? PIXEL_ICON_PATTERNS.info;
-  const cell = sizePx / 16;
   const topY = centerY - sizePx * 0.5;
 
   let primaryColor = itemColor;
@@ -535,6 +575,16 @@ export function drawPixelIcon(
     }
   }
 
+  const sprite = getCachedIconSprite(iconId, pattern, primaryColor, accentColor);
+  if (sprite) {
+    const prevSmooth = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(sprite, Math.floor(x), Math.floor(topY), sizePx, sizePx);
+    ctx.imageSmoothingEnabled = prevSmooth;
+    return;
+  }
+
+  const cell = sizePx / 16;
   for (let row = 0; row < 16; row += 1) {
     const line = pattern[row];
     if (!line) continue;

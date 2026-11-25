@@ -3,11 +3,14 @@ import {
   CHANNEL_LABELS,
   ChannelIdSchema,
   LAYOUT_MODE_LABELS,
+  SCREEN_LAYOUT_LABELS,
+  ScreenLayoutModeSchema,
   VFD_PALETTES,
   VISUAL_MODE_LABELS,
   VisualModeSchema,
   type ChannelId,
   type LayoutMode,
+  type ScreenLayoutMode,
   type VfdPalette,
   type VisualMode,
 } from '@cathobar/shared';
@@ -41,6 +44,7 @@ const MODE_ORDER: VisualMode[] = [
 ];
 const PALETTE_ORDER: VfdPalette[] = ['cyan', 'green', 'white', 'amber'];
 const LAYOUT_ORDER: LayoutMode[] = ['auto', 'lanes', 'danmaku'];
+const SCREEN_LAYOUT_ORDER: ScreenLayoutMode[] = ['auto', 'board', 'wall', 'bar'];
 
 export function DisplayPage() {
   const { connected, config, items, lastBatch, activity, lanUrls, nowPlaying, sensors, updateConfig } =
@@ -53,13 +57,19 @@ export function DisplayPage() {
   const effectiveConfig = useMemo(() => {
     const chParam = urlParams.get('channel');
     const modeParam = urlParams.get('mode');
+    const screenParam = urlParams.get('screen');
     const chOk = chParam ? ChannelIdSchema.safeParse(chParam) : null;
     const modeOk = modeParam ? VisualModeSchema.safeParse(modeParam) : null;
-    if (!chOk?.success && !modeOk?.success) return config;
+    const screenOk = screenParam ? ScreenLayoutModeSchema.safeParse(screenParam) : null;
+    if (!chOk?.success && !modeOk?.success && !screenOk?.success) return config;
     return {
       ...config,
       activeChannel: chOk?.success ? chOk.data : config.activeChannel,
-      display: modeOk?.success ? { ...config.display, visualMode: modeOk.data } : config.display,
+      display: {
+        ...config.display,
+        ...(modeOk?.success ? { visualMode: modeOk.data } : {}),
+        ...(screenOk?.success ? { screenLayout: screenOk.data } : {}),
+      },
     };
   }, [config, urlParams]);
 
@@ -147,6 +157,11 @@ export function DisplayPage() {
         const curIdx = LAYOUT_ORDER.indexOf(config.display.layoutMode);
         const nextLayout = LAYOUT_ORDER[(curIdx + 1) % LAYOUT_ORDER.length]!;
         void updateConfig({ display: { layoutMode: nextLayout } });
+        showHudTemporarily();
+      } else if (key === 'w') {
+        const curIdx = SCREEN_LAYOUT_ORDER.indexOf(config.display.screenLayout);
+        const nextScreen = SCREEN_LAYOUT_ORDER[(curIdx + 1) % SCREEN_LAYOUT_ORDER.length]!;
+        void updateConfig({ display: { screenLayout: nextScreen } });
         showHudTemporarily();
       } else if (key === 'g') {
         void updateConfig({ display: { showActivityGraph: !config.display.showActivityGraph } });
@@ -285,6 +300,19 @@ export function DisplayPage() {
             <button
               type="button"
               onClick={() => {
+                const curIdx = SCREEN_LAYOUT_ORDER.indexOf(config.display.screenLayout);
+                const nextScreen = SCREEN_LAYOUT_ORDER[(curIdx + 1) % SCREEN_LAYOUT_ORDER.length]!;
+                void updateConfig({ display: { screenLayout: nextScreen } });
+              }}
+              className="rounded bg-slate-800 px-2 py-0.5 text-emerald-300 hover:bg-slate-700"
+              title="画面レイアウト切替 (W)"
+            >
+              W: {SCREEN_LAYOUT_LABELS[config.display.screenLayout].label}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
                 const curIdx = LAYOUT_ORDER.indexOf(config.display.layoutMode);
                 const nextLayout = LAYOUT_ORDER[(curIdx + 1) % LAYOUT_ORDER.length]!;
                 void updateConfig({ display: { layoutMode: nextLayout } });
@@ -323,7 +351,7 @@ export function DisplayPage() {
 
             {stats && (
               <span className="hidden font-mono text-[11px] text-slate-400 md:inline">
-                {stats.logicalWidth}×{stats.logicalHeight} ({stats.fps}fps)
+                [{stats.effectiveScreenLayout.toUpperCase()}] {stats.logicalWidth}×{stats.logicalHeight} ({stats.fps}fps)
               </span>
             )}
 

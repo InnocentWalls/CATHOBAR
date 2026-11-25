@@ -39,12 +39,22 @@ describe('ConfigStore', () => {
     const initial = await store.load();
     expect(initial.display.visualMode).toBe('anobar8-vfd');
     expect(initial.display.layoutMode).toBe('auto');
+    expect(initial.display.screenLayout).toBe('auto');
+    expect(initial.display.boardLogicalWidth).toBe(640);
+    expect(initial.display.wallLanes).toBe(6);
     expect(initial.activeChannel).toBe('all');
     expect(initial.sources.weather.locations).toHaveLength(1);
 
     await store.patch({
       activeChannel: 'mastodon',
-      display: { visualMode: 'anobar-fed', layoutMode: 'danmaku', scrollSpeed: 120 },
+      display: {
+        visualMode: 'anobar-fed',
+        layoutMode: 'danmaku',
+        screenLayout: 'wall',
+        boardLogicalWidth: 768,
+        wallLanes: 8,
+        scrollSpeed: 120,
+      },
       sources: {
         weather: {
           locations: [
@@ -60,6 +70,9 @@ describe('ConfigStore', () => {
     expect(reloaded.activeChannel).toBe('mastodon');
     expect(reloaded.display.visualMode).toBe('anobar-fed');
     expect(reloaded.display.layoutMode).toBe('danmaku');
+    expect(reloaded.display.screenLayout).toBe('wall');
+    expect(reloaded.display.boardLogicalWidth).toBe(768);
+    expect(reloaded.display.wallLanes).toBe(8);
     expect(reloaded.sources.weather.locations).toHaveLength(2);
   });
 

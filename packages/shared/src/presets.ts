@@ -4,6 +4,7 @@ import type {
   LayoutMode,
   MarketSymbolConfig,
   ScenePreset,
+  ScreenLayoutMode,
   ShinkansenScrollStyle,
   SourceWeights,
   VfdPalette,
@@ -81,7 +82,10 @@ export const DEFAULT_CONFIG: AppConfig = {
     visualMode: 'anobar8-vfd',
     vfdPalette: 'cyan',
     layoutMode: 'auto',
+    screenLayout: 'auto',
     logicalHeight: 96,
+    boardLogicalWidth: 640,
+    wallLanes: 6,
     ledRows: 24,
     shinkansenStyle: 'scroll',
     lanes: 2,
@@ -271,6 +275,10 @@ export interface ResolutionPreset {
 }
 
 export const RESOLUTION_PRESETS: ResolutionPreset[] = [
+  { id: 'std-1920x1080', label: '1920 × 1080', width: 1920, height: 1080, note: 'フルHD 一般モニタ (16:9)' },
+  { id: 'std-2560x1440', label: '2560 × 1440', width: 2560, height: 1440, note: 'WQHD モニタ (16:9)' },
+  { id: 'std-3840x2160', label: '3840 × 2160', width: 3840, height: 2160, note: '4K UHD モニタ / TV (16:9)' },
+  { id: 'std-1280x720', label: '1280 × 720', width: 1280, height: 720, note: 'HD モニタ (16:9)' },
   { id: 'twihai-1920x480', label: '1920 × 480', width: 1920, height: 480, note: 'ツイ廃モニタ (8.8" / 4:1)' },
   { id: 'twihai-1280x400', label: '1280 × 400', width: 1280, height: 400, note: 'ツイ廃モニタ (7.9" / 3.2:1)' },
   { id: 'twihai-1920x515', label: '1920 × 515', width: 1920, height: 515, note: 'バータイプ液晶 (12.6" / 3.7:1)' },
@@ -343,6 +351,25 @@ export const LAYOUT_MODE_LABELS: Record<LayoutMode, { label: string; description
   danmaku: {
     label: '弾幕 (フリーフロー)',
     description: 'ニコニコ動画のように行に縛られず空き高さへ自由に流す',
+  },
+};
+
+export const SCREEN_LAYOUT_LABELS: Record<ScreenLayoutMode, { label: string; description: string }> = {
+  auto: {
+    label: '自動 (画面比率で切替)',
+    description: '16:9等の一般モニタは総合ボード、横長バー液晶は従来バー表示',
+  },
+  board: {
+    label: '総合情報ボード (16:9)',
+    description: '上部ステータス(時計/天気/再生中/スペアナ)＋中央情報盤＋下部ティッカー',
+  },
+  wall: {
+    label: '多段ティッカー壁 (16:9)',
+    description: '上部ミニバー＋画面いっぱいの多段レーン／大型発車標・パタパタ・弾幕',
+  },
+  bar: {
+    label: '横長バー (ANOBAR標準)',
+    description: 'ツイ廃モニタ・超横長ディスプレイ向けの従来レイアウト',
   },
 };
 

@@ -5,14 +5,23 @@ import {
   type DisplaySettings,
   type NowPlayingState,
   type SensorReading,
+  type SourcesConfig,
   type TickerItem,
   type VisualMode,
 } from '@cathobar/shared';
+import {
+  computeScreenRegions,
+  drawBoardBody,
+  drawBoardHeader,
+  drawFullScreenClockShowcase,
+  drawTallBreakingAlert,
+} from './board-renderer.js';
 import { drawPixelIcon, resolveItemIcon } from './pixel-icons.js';
 import type { SpectrumSnapshot } from './spectrum-analyzer.js';
 import {
   computeStationBadgeWidth,
   type ActiveTickerSpan,
+  type EffectiveScreenLayout,
   type SplitFlapRowState,
 } from './ticker-layout.js';
 
@@ -119,11 +128,14 @@ export class Renderer2D {
 
   render(params: {
     display: DisplaySettings;
+    effectiveScreenLayout?: EffectiveScreenLayout;
     activeChannel: ChannelId;
     isRotating: boolean;
     rotationProgress: number;
     spans: ActiveTickerSpan[];
     splitFlapRows?: SplitFlapRowState[];
+    allItems?: TickerItem[];
+    sources?: SourcesConfig;
     activity: ActivityBucket[];
     latestWeathers: TickerItem[];
     nowPlaying: NowPlayingState | null;
@@ -137,11 +149,14 @@ export class Renderer2D {
   }): void {
     const {
       display,
+      effectiveScreenLayout = 'bar',
       activeChannel,
       isRotating,
       rotationProgress,
       spans,
       splitFlapRows = [],
+      allItems = [],
+      sources,
       activity,
       latestWeathers,
       nowPlaying,
@@ -170,7 +185,135 @@ export class Renderer2D {
     }
 
     if (breakingAlert) {
-      this.drawBreakingAlert(ctx, display, breakingAlert);
+      if (this.height >= 160) {
+        drawTallBreakingAlert({
+          ctx,
+          width: this.width,
+          height: this.height,
+          display,
+          item: breakingAlert.item,
+          elapsedSec: breakingAlert.elapsedSec,
+        });
+      } else {
+        this.drawBreakingAlert(ctx, display, breakingAlert);
+      }
+      ctx.restore();
+      return;
+    }
+
+    if (effectiveScreenLayout !== 'bar') {
+      const regions = computeScreenRegions(
+        this.width,
+        this.height,
+        effectiveScreenLayout,
+        display,
+        activeChannel,
+      );
+
+      if (activeChannel === 'clock') {
+        drawFullScreenClockShowcase({
+          ctx,
+          rect: regions.bodyRect,
+          display,
+          latestWeathers,
+          nowPlaying,
+          sensors,
+          spectrum,
+          now,
+          transparent,
+        });
+      } else {
+        if (regions.headerRect.w > 0 && regions.headerRect.h > 0) {
+          drawBoardHeader({
+            ctx,
+            rect: regions.headerRect,
+            compact: effectiveScreenLayout === 'wall',
+            display,
+            activeChannel,
+            isRotating,
+            rotationProgress,
+            latestWeathers,
+            nowPlaying,
+            sensors,
+            spectrum,
+            now,
+            transparent,
+            paused,
+          });
+        }
+
+        if (regions.showMiddleBoard && regions.bodyRect.w > 0 && regions.bodyRect.h > 0 && sources) {
+          drawBoardBody({
+            ctx,
+            rect: regions.bodyRect,
+            display,
+            activeChannel,
+            allItems,
+            sources,
+            latestWeathers,
+            nowPlaying,
+            sensors,
+            now,
+            transparent,
+          });
+        }
+
+        if (regions.tickerRect.w > 0 && regions.tickerRect.h > 0) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(
+            regions.tickerRect.x,
+            regions.tickerRect.y,
+            regions.tickerRect.w,
+            regions.tickerRect.h,
+          );
+          ctx.clip();
+          ctx.translate(regions.tickerRect.x, regions.tickerRect.y);
+
+          if (regions.showMiddleBoard) {
+            // Subtle separator above bottom ticker strip
+            ctx.fillStyle =
+              display.visualMode === 'shinkansen-led'
+                ? 'rgba(24,255,77,0.28)'
+                : 'rgba(148,163,184,0.22)';
+            ctx.fillRect(0, 0, regions.tickerRect.w, 1);
+          }
+
+          if (display.visualMode === 'split-flap') {
+            this.drawSplitFlap(
+              ctx,
+              display,
+              regions.tickerRect.w,
+              regions.tickerRect.h,
+              splitFlapRows,
+              regions.effectiveTickerLanes,
+            );
+          } else if (display.visualMode === 'station-board') {
+            this.drawStationBoard(
+              ctx,
+              display,
+              regions.tickerRect.w,
+              regions.tickerRect.h,
+              spans,
+              regions.effectiveTickerLanes,
+            );
+          } else {
+            this.drawTickerSpans(
+              ctx,
+              display,
+              regions.tickerRect.w,
+              regions.tickerRect.h,
+              spans,
+            );
+          }
+          ctx.restore();
+        }
+      }
+
+      if (display.showActivityGraph && regions.graphRect.h > 0) {
+        this.drawActivityGraph(ctx, display, regions.graphRect.h, activity);
+      }
+
       ctx.restore();
       return;
     }
@@ -195,9 +338,23 @@ export class Renderer2D {
       this.drawClockChannel(ctx, display, tickerHeight, latestWeathers, nowPlaying, sensors, now);
     } else {
       if (display.visualMode === 'split-flap') {
-        this.drawSplitFlap(ctx, display, tickerWidth, tickerHeight, splitFlapRows);
+        this.drawSplitFlap(
+          ctx,
+          display,
+          tickerWidth,
+          tickerHeight,
+          splitFlapRows,
+          Math.max(1, Math.min(3, display.lanes)),
+        );
       } else if (display.visualMode === 'station-board') {
-        this.drawStationBoard(ctx, display, tickerWidth, tickerHeight, spans);
+        this.drawStationBoard(
+          ctx,
+          display,
+          tickerWidth,
+          tickerHeight,
+          spans,
+          Math.max(1, Math.min(3, display.lanes)),
+        );
       } else {
         this.drawTickerSpans(ctx, display, tickerWidth, tickerHeight, spans);
       }
@@ -316,13 +473,14 @@ export class Renderer2D {
     tickerWidth: number,
     tickerHeight: number,
     rows: SplitFlapRowState[],
+    lanesOverride = Math.min(3, display.lanes),
   ): void {
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, tickerWidth, tickerHeight);
     ctx.clip();
 
-    const rowCount = Math.max(1, rows.length || Math.min(3, display.lanes));
+    const rowCount = Math.max(1, rows.length || lanesOverride);
     const rowH = tickerHeight / rowCount;
     const cellH = Math.max(12, Math.floor(rowH * 0.78));
     const cellW = Math.max(12, Math.round(cellH * 0.92));
@@ -434,8 +592,9 @@ export class Renderer2D {
     tickerWidth: number,
     tickerHeight: number,
     spans: ActiveTickerSpan[],
+    lanesOverride = Math.max(1, Math.min(3, display.lanes)),
   ): void {
-    const safeLanes = Math.max(1, Math.min(3, display.lanes));
+    const safeLanes = Math.max(1, lanesOverride);
     const laneHeight = tickerHeight / safeLanes;
     const badgeColWidth = computeStationBadgeWidth(tickerWidth);
     const textAreaWidth = Math.max(40, tickerWidth - badgeColWidth);

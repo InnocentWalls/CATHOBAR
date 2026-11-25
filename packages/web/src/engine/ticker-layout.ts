@@ -3,7 +3,9 @@ import {
   sourceMatchesChannel,
   type AppConfig,
   type ChannelId,
+  type DisplaySettings,
   type LayoutMode,
+  type ScreenLayoutMode,
   type ShinkansenScrollStyle,
   type SourceWeights,
   type SourcesConfig,
@@ -40,10 +42,28 @@ export interface LogicalSize {
   height: number;
 }
 
+export type EffectiveScreenLayout = 'bar' | 'board' | 'wall';
+
 export type MeasureTextFn = (text: string, fontSizePx: number, weight?: number) => number;
 
 export function computeStationBadgeWidth(tickerWidth: number): number {
   return Math.max(60, Math.min(112, Math.round(tickerWidth * 0.24)));
+}
+
+/**
+ * Resolves the effective screen layout mode given viewport dimensions.
+ * Ultrawide displays (>= 2.5:1) default to classic 'bar', while standard 16:9 / 16:10 / portrait displays use 'board'.
+ */
+export function resolveEffectiveScreenLayout(
+  screenLayout: ScreenLayoutMode,
+  viewportWidth: number,
+  viewportHeight: number,
+): EffectiveScreenLayout {
+  if (screenLayout !== 'auto') {
+    return screenLayout;
+  }
+  const aspect = Math.max(1, viewportWidth) / Math.max(1, viewportHeight);
+  return aspect < 2.5 ? 'board' : 'bar';
 }
 
 /**
@@ -61,6 +81,74 @@ export function computeLogicalSize(
   const minWidth = Math.max(48, Math.round(height * 1.6667));
   const width = Math.max(minWidth, Math.round(height * aspect));
   return { width, height };
+}
+
+/**
+ * Computes logical dot dimensions for both classic ultrawide bars and standard 16:9/4K monitors.
+ */
+export function computeScreenLogicalSize(
+  viewportWidth: number,
+  viewportHeight: number,
+  effectiveScreenLayout: EffectiveScreenLayout,
+  display: Pick<DisplaySettings, 'visualMode' | 'logicalHeight' | 'ledRows' | 'boardLogicalWidth'>,
+): LogicalSize {
+  if (effectiveScreenLayout === 'bar') {
+    const targetH =
+      display.visualMode === 'shinkansen-led' ? display.ledRows : display.logicalHeight;
+    return computeLogicalSize(viewportWidth, viewportHeight, targetH);
+  }
+
+  const safeW = Math.max(1, viewportWidth);
+  const safeH = Math.max(1, viewportHeight);
+  const aspect = safeW / safeH;
+
+  if (display.visualMode === 'shinkansen-led') {
+    let width = Math.max(192, Math.min(384, Math.round(display.ledRows * 10)));
+    let height = Math.round(width / aspect);
+    if (height < 96) {
+      height = 96;
+      width = Math.max(144, Math.round(height * aspect));
+    } else if (height > 480) {
+      height = 480;
+      width = Math.max(144, Math.round(height * aspect));
+    }
+    return { width, height };
+  }
+
+  let width = Math.max(320, Math.min(1280, Math.round(display.boardLogicalWidth)));
+  let height = Math.round(width / aspect);
+  if (height < 160) {
+    height = 160;
+    width = Math.max(320, Math.round(height * aspect));
+  } else if (height > 960) {
+    height = 960;
+    width = Math.max(240, Math.round(height * aspect));
+  }
+  return { width, height };
+}
+
+/**
+ * Computes Canvas2D backing supersampling scale while capping clean/split-flap buffers at Full HD (1920x1080)
+ * to avoid 4K upload/fill stalls and giant CPU glyph tessellation.
+ */
+export function computeRenderScale(
+  viewportHeight: number,
+  logicalWidth: number,
+  logicalHeight: number,
+  visualMode: VisualMode,
+  effectiveScreenLayout: EffectiveScreenLayout,
+): number {
+  const safeLogicalW = Math.max(1, logicalWidth);
+  const safeLogicalH = Math.max(1, logicalHeight);
+  if (visualMode === 'clean' || visualMode === 'split-flap') {
+    const rawScale = Math.max(1, Math.min(4, viewportHeight / safeLogicalH));
+    const maxAllowed = Math.min(1920 / safeLogicalW, 1080 / safeLogicalH);
+    return Math.max(1, Math.min(rawScale, maxAllowed));
+  }
+  if (effectiveScreenLayout !== 'bar' && visualMode !== 'shinkansen-led') {
+    return Math.max(1, Math.min(2, Math.floor(viewportHeight / safeLogicalH)));
+  }
+  return 1;
 }
 
 /**
@@ -108,6 +196,8 @@ export interface StepParams {
   tickerHeight: number;
   logicalHeight: number;
   lanes: number;
+  maxRows?: number;
+  maxFontSize?: number;
   layoutMode: LayoutMode;
   visualMode: VisualMode;
   shinkansenStyle: ShinkansenScrollStyle;
@@ -260,6 +350,8 @@ export class TickerLayoutEngine {
       tickerHeight,
       logicalHeight,
       lanes,
+      maxRows,
+      maxFontSize,
       layoutMode,
       visualMode,
       shinkansenStyle,
@@ -278,7 +370,7 @@ export class TickerLayoutEngine {
     if (visualMode === 'split-flap') {
       this.spans = [];
       this.shinkansenState = null;
-      this.stepSplitFlap(clampedDt, Math.max(1, Math.min(3, lanes)));
+      this.stepSplitFlap(clampedDt, Math.max(1, Math.min(maxRows ?? 3, lanes)));
       return [];
     }
 
@@ -298,7 +390,12 @@ export class TickerLayoutEngine {
         );
       }
       this.shinkansenState = null;
-      const ledFontSize = Math.max(11, Math.round(tickerHeight * 0.78));
+      const ledLanes = Math.max(1, Math.min(maxRows ?? 1, lanes));
+      const laneHeight = tickerHeight / ledLanes;
+      const ledFontSize = Math.max(
+        11,
+        Math.min(Math.round(laneHeight * 0.78), maxFontSize ?? 36),
+      );
       const fadeMargin = Math.max(4, Math.round(tickerWidth * 0.03));
       for (const span of this.spans) {
         span.x -= scrollSpeed * clampedDt;
@@ -308,7 +405,7 @@ export class TickerLayoutEngine {
       if (!paused) {
         this.stepLanesWithFont(
           tickerWidth,
-          1,
+          ledLanes,
           ledFontSize,
           showBadge,
           showPixelIcons,
@@ -321,9 +418,12 @@ export class TickerLayoutEngine {
 
     if (visualMode === 'station-board') {
       this.shinkansenState = null;
-      const safeLanes = Math.max(1, Math.min(3, lanes));
+      const safeLanes = Math.max(1, Math.min(maxRows ?? 3, lanes));
       const laneHeight = tickerHeight / safeLanes;
-      const fontSize = Math.max(10, Math.min(laneHeight * 0.64, logicalHeight * 0.44));
+      const fontSize = Math.max(
+        10,
+        Math.min(laneHeight * 0.64, logicalHeight * 0.44, maxFontSize ?? 44),
+      );
       const badgeColWidth = computeStationBadgeWidth(tickerWidth);
       const textAreaWidth = Math.max(40, tickerWidth - badgeColWidth);
       const fadeMargin = Math.max(8, Math.round(textAreaWidth * 0.03));
@@ -374,11 +474,15 @@ export class TickerLayoutEngine {
           showPixelIcons,
           fadeMargin,
           measureText,
+          maxFontSize,
         );
       } else {
-        const safeLanes = Math.max(1, lanes);
+        const safeLanes = Math.max(1, Math.min(maxRows ?? 10, lanes));
         const laneHeight = tickerHeight / safeLanes;
-        const fontSize = Math.max(10, Math.min(laneHeight * 0.68, logicalHeight * 0.48));
+        const fontSize = Math.max(
+          10,
+          Math.min(laneHeight * 0.68, logicalHeight * 0.48, maxFontSize ?? 46),
+        );
         this.stepLanesWithFont(
           tickerWidth,
           safeLanes,
@@ -593,13 +697,18 @@ export class TickerLayoutEngine {
     showPixelIcons: boolean,
     fadeMargin: number,
     measureText: MeasureTextFn,
+    maxFontSize?: number,
   ): void {
-    const slotCount = Math.max(3, Math.min(8, Math.floor(tickerHeight / 15)));
+    const slotCount = Math.max(3, Math.min(14, Math.floor(tickerHeight / 15)));
     const slotHeight = tickerHeight / slotCount;
-    const fontSize = Math.max(10, Math.min(slotHeight * 0.82, logicalHeight * 0.32));
+    const fontSize = Math.max(
+      10,
+      Math.min(slotHeight * 0.82, logicalHeight * 0.32, maxFontSize ?? 28),
+    );
     const gap = Math.max(14, Math.round(fontSize * 0.9));
+    const maxAttempts = slotCount > 6 ? Math.min(5, Math.ceil(slotCount / 2)) : 3;
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const candidateItem = this.peekNextItem();
       if (!candidateItem) break;
 

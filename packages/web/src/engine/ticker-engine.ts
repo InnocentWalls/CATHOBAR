@@ -9,13 +9,17 @@ import {
   type TickerItem,
 } from '@cathobar/shared';
 import { playBreakingAlertChime, resolveAlertSoundKind } from './alert-audio.js';
+import { computeScreenRegions } from './board-renderer.js';
 import { Renderer2D, type ActiveBreakingAlert } from './renderer-2d.js';
 import { RendererGL } from './renderer-gl.js';
 import { SpectrumAnalyzer } from './spectrum-analyzer.js';
 import {
   computeEffectiveChannel,
-  computeLogicalSize,
+  computeRenderScale,
+  computeScreenLogicalSize,
+  resolveEffectiveScreenLayout,
   TickerLayoutEngine,
+  type EffectiveScreenLayout,
 } from './ticker-layout.js';
 
 export interface EngineStats {
@@ -25,6 +29,7 @@ export interface EngineStats {
   viewportWidth: number;
   viewportHeight: number;
   effectiveChannel: ChannelId;
+  effectiveScreenLayout: EffectiveScreenLayout;
   rotating: boolean;
   nightActive: boolean;
   paused: boolean;
@@ -46,6 +51,7 @@ export class TickerEngine {
   private breakingQueue: TickerItem[] = [];
   private activeBreaking: ActiveBreakingAlert | null = null;
   private lastEffectiveChannel: ChannelId;
+  private lastEffectiveScreenLayout: EffectiveScreenLayout = 'bar';
   private rafId: number | null = null;
   private lastFrameMs = 0;
   private fpsFrames = 0;
@@ -75,8 +81,16 @@ export class TickerEngine {
 
   setViewportSize(width: number, height: number): void {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    this.viewportWidth = Math.max(1, Math.round(width * dpr));
-    this.viewportHeight = Math.max(1, Math.round(height * dpr));
+    let w = Math.max(1, Math.round(width * dpr));
+    let h = Math.max(1, Math.round(height * dpr));
+    const maxDim = Math.max(w, h);
+    if (maxDim > 4096) {
+      const s = 4096 / maxDim;
+      w = Math.max(1, Math.round(w * s));
+      h = Math.max(1, Math.round(h * s));
+    }
+    this.viewportWidth = w;
+    this.viewportHeight = h;
   }
 
   setTransparent(transparent: boolean): void {
@@ -102,6 +116,9 @@ export class TickerEngine {
     const nextRot = computeEffectiveChannel(config, Date.now()).channel;
     const channelChanged = prevRotChannel !== nextRot || this.config.activeChannel !== config.activeChannel;
     const modeChanged = this.config.display.visualMode !== config.display.visualMode;
+    const screenLayoutChanged =
+      this.config.display.screenLayout !== config.display.screenLayout ||
+      this.config.display.wallLanes !== config.display.wallLanes;
 
     this.config = config;
     this.allItems = items;
@@ -122,7 +139,7 @@ export class TickerEngine {
 
     this.updateWeatherCache(items);
     this.layout.setPool(items, nextRot, config.sources, config.filtering?.weights);
-    if (channelChanged || modeChanged) {
+    if (channelChanged || modeChanged || screenLayoutChanged) {
       this.layout.clearActive();
     }
   }
@@ -223,19 +240,30 @@ export class TickerEngine {
       }
     }
 
-    const targetLogicalHeight =
-      display.visualMode === 'shinkansen-led' ? display.ledRows : display.logicalHeight;
-
-    const logical = computeLogicalSize(
+    const effectiveScreenLayout = resolveEffectiveScreenLayout(
+      display.screenLayout,
       this.viewportWidth,
       this.viewportHeight,
-      targetLogicalHeight,
+    );
+    if (effectiveScreenLayout !== this.lastEffectiveScreenLayout) {
+      this.lastEffectiveScreenLayout = effectiveScreenLayout;
+      this.layout.clearActive();
+    }
+
+    const logical = computeScreenLogicalSize(
+      this.viewportWidth,
+      this.viewportHeight,
+      effectiveScreenLayout,
+      display,
     );
 
-    const renderScale =
-      display.visualMode === 'clean' || display.visualMode === 'split-flap'
-        ? Math.max(1, Math.min(4, this.viewportHeight / logical.height))
-        : 1;
+    const renderScale = computeRenderScale(
+      this.viewportHeight,
+      logical.width,
+      logical.height,
+      display.visualMode,
+      effectiveScreenLayout,
+    );
 
     this.renderer2d.configure(logical.width, logical.height, renderScale, display.visualMode);
 
@@ -249,34 +277,62 @@ export class TickerEngine {
           )
         : null;
 
-    const graphHeight = display.showActivityGraph
-      ? logical.height <= 40
-        ? Math.max(3, Math.round(logical.height * 0.14))
-        : Math.max(8, Math.round(logical.height * 0.14))
-      : 0;
-    const tickerHeight = logical.height - graphHeight;
-    const overlayWidth = this.renderer2d.getRightOverlayWidth(
-      tickerHeight,
-      display,
-      activeChannel,
-      spectrumSnapshot,
-    );
-    const tickerWidth = Math.max(40, logical.width - overlayWidth);
+    let tickerWidth: number;
+    let tickerHeight: number;
+    let stepLanes = display.lanes;
+    let maxRows: number | undefined;
+    let maxFontSize: number | undefined;
+    let skipTickerStep = false;
+
+    if (effectiveScreenLayout !== 'bar') {
+      const regions = computeScreenRegions(
+        logical.width,
+        logical.height,
+        effectiveScreenLayout,
+        display,
+        activeChannel,
+      );
+      tickerWidth = Math.max(40, regions.tickerRect.w);
+      tickerHeight = Math.max(16, regions.tickerRect.h);
+      stepLanes = regions.effectiveTickerLanes;
+      maxRows = regions.effectiveTickerMaxRows;
+      maxFontSize = regions.effectiveTickerMaxFontSize;
+      skipTickerStep = regions.tickerRect.h <= 0 || regions.tickerRect.w <= 0;
+    } else {
+      const graphHeight = display.showActivityGraph
+        ? logical.height <= 40
+          ? Math.max(3, Math.round(logical.height * 0.14))
+          : Math.max(8, Math.round(logical.height * 0.14))
+        : 0;
+      tickerHeight = logical.height - graphHeight;
+      const overlayWidth = this.renderer2d.getRightOverlayWidth(
+        tickerHeight,
+        display,
+        activeChannel,
+        spectrumSnapshot,
+      );
+      tickerWidth = Math.max(40, logical.width - overlayWidth);
+    }
 
     const effectiveSpeed =
       display.visualMode === 'shinkansen-led'
-        ? display.scrollSpeed * (logical.height / 72)
+        ? display.scrollSpeed *
+          (effectiveScreenLayout === 'bar'
+            ? logical.height / 72
+            : display.ledRows / 72)
         : display.scrollSpeed;
 
     const spans =
-      this.activeBreaking || (night.blackout && !this.activeBreaking)
+      skipTickerStep || this.activeBreaking || (night.blackout && !this.activeBreaking)
         ? []
         : this.layout.step({
             dtSec: clampedDt,
             tickerWidth,
             tickerHeight,
             logicalHeight: logical.height,
-            lanes: display.lanes,
+            lanes: stepLanes,
+            maxRows,
+            maxFontSize,
             layoutMode: display.layoutMode,
             visualMode: display.visualMode,
             shinkansenStyle: display.shinkansenStyle,
@@ -290,11 +346,14 @@ export class TickerEngine {
 
     this.renderer2d.render({
       display,
+      effectiveScreenLayout,
       activeChannel,
       isRotating: rotState.rotating && !night.clockOnly,
       rotationProgress: rotState.progress,
       spans,
       splitFlapRows: this.layout.getSplitFlapRows(),
+      allItems: this.allItems,
+      sources,
       activity: this.activity,
       latestWeathers: this.latestWeathers,
       nowPlaying: this.nowPlaying,
@@ -357,6 +416,7 @@ export class TickerEngine {
         viewportWidth: this.viewportWidth,
         viewportHeight: this.viewportHeight,
         effectiveChannel: activeChannel,
+        effectiveScreenLayout,
         rotating: rotState.rotating && !night.clockOnly,
         nightActive: night.active,
         paused: this.paused,
