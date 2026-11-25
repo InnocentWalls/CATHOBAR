@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG, type TickerItem } from '@cathobar/shared';
+import { DEFAULT_CONFIG, evaluateNightMode, type TickerItem } from '@cathobar/shared';
 import { resolveItemIcon } from '../src/engine/pixel-icons.js';
+import { generateQrMatrix, renderQrSvg } from '../src/engine/qrcode.js';
 import {
   computeEffectiveChannel,
   computeEdgeAlpha,
@@ -428,5 +429,135 @@ describe('computeEffectiveChannel & resolveItemIcon', () => {
         breaking: false,
       }),
     ).toBe('quake');
+    expect(
+      resolveItemIcon({
+        id: '2',
+        source: 'sysmon',
+        badge: 'SYSMON',
+        text: 'CPU 10%',
+        color: '#fff',
+        timestamp: 1,
+        priority: 'normal',
+        oneShot: false,
+        breaking: false,
+      }),
+    ).toBe('cpu');
+  });
+});
+
+describe('Night mode, split-flap, station-board, pause nudge & QR code', () => {
+  const measure = (text: string, size: number, weight = 500) =>
+    text.length * size * (weight >= 700 ? 0.68 : 0.6);
+
+  it('evaluates overnight and daytime night-mode schedules', () => {
+    const cfg = {
+      enabled: true,
+      startTime: '23:00',
+      endTime: '07:00',
+      behavior: 'dim' as const,
+      brightness: 0.3,
+      forceAmberVfd: true,
+    };
+    const lateNight = new Date(2026, 10, 25, 23, 30);
+    const earlyMorning = new Date(2026, 10, 26, 3, 15);
+    const afternoon = new Date(2026, 10, 25, 14, 0);
+
+    expect(evaluateNightMode(cfg, lateNight)).toMatchObject({
+      active: true,
+      brightnessOverride: 0.3,
+      paletteOverride: 'amber',
+    });
+    expect(evaluateNightMode(cfg, earlyMorning).active).toBe(true);
+    expect(evaluateNightMode(cfg, afternoon).active).toBe(false);
+    expect(
+      evaluateNightMode({ ...cfg, behavior: 'blackout', forceAmberVfd: false }, lateNight),
+    ).toMatchObject({ active: true, blackout: true, paletteOverride: null });
+  });
+
+  it('supports split-flap rows, station-board layout, and pause nudgeScroll', () => {
+    const item: TickerItem = {
+      id: 'sf1',
+      source: 'rss',
+      badge: 'NHK',
+      text: 'パタパタ表示テスト',
+      color: '#38bdf8',
+      timestamp: 1000,
+      priority: 'normal',
+      oneShot: false,
+      breaking: false,
+    };
+
+    const sfEngine = new TickerLayoutEngine();
+    sfEngine.setPool([item], 'all');
+    const sfSpans = sfEngine.step({
+      dtSec: 0.5,
+      tickerWidth: 300,
+      tickerHeight: 80,
+      logicalHeight: 96,
+      lanes: 2,
+      layoutMode: 'lanes',
+      visualMode: 'split-flap',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 72,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(sfSpans).toEqual([]);
+    expect(sfEngine.getSplitFlapRows()).toHaveLength(2);
+    expect(sfEngine.getSplitFlapRows()[0]?.displayText).toBe('パタパタ表示テスト');
+
+    const sbEngine = new TickerLayoutEngine();
+    sbEngine.setPool([item], 'all');
+    const spans1 = sbEngine.step({
+      dtSec: 0.016,
+      tickerWidth: 320,
+      tickerHeight: 80,
+      logicalHeight: 96,
+      lanes: 1,
+      layoutMode: 'lanes',
+      visualMode: 'station-board',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 72,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(spans1).toHaveLength(1);
+    expect(spans1[0]?.badgeWidth).toBe(0);
+    const xBefore = spans1[0]!.x;
+
+    // While paused, step freezes position and nudgeScroll shifts manually
+    sbEngine.step({
+      dtSec: 0.5,
+      tickerWidth: 320,
+      tickerHeight: 80,
+      logicalHeight: 96,
+      lanes: 1,
+      layoutMode: 'lanes',
+      visualMode: 'station-board',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 72,
+      showBadge: true,
+      paused: true,
+      measureText: measure,
+    });
+    expect(spans1[0]!.x).toBe(xBefore);
+
+    sbEngine.nudgeScroll(-30);
+    expect(spans1[0]!.x).toBe(xBefore - 30);
+  });
+
+  it('generates valid QR matrix and crisp SVG for LAN URLs', () => {
+    const matrix = generateQrMatrix('http://192.168.1.50:3000/admin');
+    expect(matrix.length).toBeGreaterThanOrEqual(25);
+    expect(matrix.length).toBe(matrix[0]?.length);
+    // Top-left 7x7 finder outer border check
+    expect(matrix[0]?.slice(0, 7).every(Boolean)).toBe(true);
+
+    const svg = renderQrSvg('http://192.168.1.50:3000/admin', 160);
+    expect(svg).toContain('<svg');
+    expect(svg).toContain('width="160"');
   });
 });

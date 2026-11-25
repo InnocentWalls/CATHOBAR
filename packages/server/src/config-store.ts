@@ -10,11 +10,12 @@ import {
 } from '@cathobar/shared';
 
 /**
- * Persists application configuration to disk as JSON with atomic writes.
+ * Persists application configuration to disk as JSON with serialized atomic writes.
  */
 export class ConfigStore {
   private readonly filePath: string;
   private config: AppConfig;
+  private saveQueue: Promise<void> = Promise.resolve();
 
   constructor(filePath = resolve(process.cwd(), 'data', 'config.json')) {
     this.filePath = filePath;
@@ -26,7 +27,7 @@ export class ConfigStore {
       const raw = await readFile(this.filePath, 'utf-8');
       const parsed = JSON.parse(raw) as unknown;
       this.config = this.mergeWithDefaults(parsed);
-      if (hasMigratedRssFeedUrl(parsed, this.config)) {
+      if (hasMigratedRssFeedUrl(parsed, this.config) || hasMigratedNhkBreakingUrl(parsed, this.config)) {
         await this.save();
       }
     } catch (err) {
@@ -54,12 +55,24 @@ export class ConfigStore {
     return this.get();
   }
 
-  async save(): Promise<void> {
-    const dir = dirname(this.filePath);
-    await mkdir(dir, { recursive: true });
-    const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmpPath, `${JSON.stringify(this.config, null, 2)}\n`, 'utf-8');
-    await rename(tmpPath, this.filePath);
+  async replace(input: unknown): Promise<AppConfig> {
+    this.config = this.mergeWithDefaults(input);
+    await this.save();
+    return this.get();
+  }
+
+  save(): Promise<void> {
+    const snapshot = `${JSON.stringify(this.config, null, 2)}\n`;
+    const run = async () => {
+      const dir = dirname(this.filePath);
+      await mkdir(dir, { recursive: true });
+      const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}-${Math.random().toString(36).slice(2, 6)}.tmp`;
+      await writeFile(tmpPath, snapshot, 'utf-8');
+      await rename(tmpPath, this.filePath);
+    };
+    const next = this.saveQueue.then(run, run);
+    this.saveQueue = next.catch(() => {});
+    return next;
   }
 
   private mergeWithDefaults(raw: unknown): AppConfig {
@@ -69,9 +82,11 @@ export class ConfigStore {
     const obj = raw as Record<string, unknown>;
     const rawSources = isPlainObject(obj.sources) ? obj.sources : {};
     const rawRss = isPlainObject(rawSources.rss) ? rawSources.rss : {};
+    const rawNhkBreaking = isPlainObject(rawSources.nhkBreaking) ? rawSources.nhkBreaking : {};
     const rawWeather = isPlainObject(rawSources.weather) ? rawSources.weather : {};
     const rawFiltering = isPlainObject(obj.filtering) ? obj.filtering : {};
     const rawRotation = isPlainObject(obj.rotation) ? obj.rotation : {};
+    const rawNightMode = isPlainObject(obj.nightMode) ? obj.nightMode : {};
 
     const rssFeeds = Array.isArray(rawRss.feeds)
       ? rawRss.feeds.map((entry) =>
@@ -80,6 +95,14 @@ export class ConfigStore {
             : entry,
         )
       : DEFAULT_CONFIG.sources.rss.feeds;
+
+    const nhkBreaking = {
+      ...DEFAULT_CONFIG.sources.nhkBreaking,
+      ...rawNhkBreaking,
+      ...(typeof rawNhkBreaking.url === 'string'
+        ? { url: migrateLegacyRssUrl(rawNhkBreaking.url) }
+        : {}),
+    };
 
     // Migrate legacy single-city weather config to multi-location array
     let weatherLocations = DEFAULT_CONFIG.sources.weather.locations;
@@ -115,6 +138,11 @@ export class ConfigStore {
         ...DEFAULT_CONFIG.display,
         ...(isPlainObject(obj.display) ? obj.display : {}),
       },
+      nightMode: {
+        ...DEFAULT_CONFIG.nightMode,
+        ...rawNightMode,
+      },
+      scenes: Array.isArray(obj.scenes) ? obj.scenes : DEFAULT_CONFIG.scenes,
       rotation: {
         ...DEFAULT_CONFIG.rotation,
         ...rawRotation,
@@ -133,19 +161,14 @@ export class ConfigStore {
           ...rawRss,
           feeds: rssFeeds,
         },
+        nhkBreaking,
         wikipedia: {
           ...DEFAULT_CONFIG.sources.wikipedia,
           ...(isPlainObject(rawSources.wikipedia) ? rawSources.wikipedia : {}),
         },
         weather: {
-          enabled:
-            typeof rawWeather.enabled === 'boolean'
-              ? rawWeather.enabled
-              : DEFAULT_CONFIG.sources.weather.enabled,
-          pollIntervalSec:
-            typeof rawWeather.pollIntervalSec === 'number'
-              ? rawWeather.pollIntervalSec
-              : DEFAULT_CONFIG.sources.weather.pollIntervalSec,
+          ...DEFAULT_CONFIG.sources.weather,
+          ...rawWeather,
           locations: weatherLocations,
         },
         mastodon: {
@@ -172,6 +195,18 @@ export class ConfigStore {
           ...DEFAULT_CONFIG.sources.countdown,
           ...(isPlainObject(rawSources.countdown) ? rawSources.countdown : {}),
         },
+        sysmon: {
+          ...DEFAULT_CONFIG.sources.sysmon,
+          ...(isPlainObject(rawSources.sysmon) ? rawSources.sysmon : {}),
+        },
+        calendar: {
+          ...DEFAULT_CONFIG.sources.calendar,
+          ...(isPlainObject(rawSources.calendar) ? rawSources.calendar : {}),
+        },
+        sensors: {
+          ...DEFAULT_CONFIG.sources.sensors,
+          ...(isPlainObject(rawSources.sensors) ? rawSources.sensors : {}),
+        },
         webhook: {
           ...DEFAULT_CONFIG.sources.webhook,
           ...(isPlainObject(rawSources.webhook) ? rawSources.webhook : {}),
@@ -189,6 +224,11 @@ export class ConfigStore {
         ...current.display,
         ...(patch.display ?? {}),
       },
+      nightMode: {
+        ...current.nightMode,
+        ...(patch.nightMode ?? {}),
+      },
+      scenes: patch.scenes ?? current.scenes,
       rotation: {
         ...current.rotation,
         ...(patch.rotation ?? {}),
@@ -205,6 +245,10 @@ export class ConfigStore {
         rss: {
           ...current.sources.rss,
           ...(patch.sources?.rss ?? {}),
+        },
+        nhkBreaking: {
+          ...current.sources.nhkBreaking,
+          ...(patch.sources?.nhkBreaking ?? {}),
         },
         wikipedia: {
           ...current.sources.wikipedia,
@@ -238,6 +282,18 @@ export class ConfigStore {
           ...current.sources.countdown,
           ...(patch.sources?.countdown ?? {}),
         },
+        sysmon: {
+          ...current.sources.sysmon,
+          ...(patch.sources?.sysmon ?? {}),
+        },
+        calendar: {
+          ...current.sources.calendar,
+          ...(patch.sources?.calendar ?? {}),
+        },
+        sensors: {
+          ...current.sources.sensors,
+          ...(patch.sources?.sensors ?? {}),
+        },
         webhook: {
           ...current.sources.webhook,
           ...(patch.sources?.webhook ?? {}),
@@ -253,7 +309,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function migrateLegacyRssUrl(url: string): string {
   return url.replace(
-    /^https?:\/\/www3\.nhk\.or\.jp\/rss\/news\/(cat\d+\.xml)$/i,
+    /^https?:\/\/(?:www3|www)\.nhk\.or\.jp\/rss\/news\/(cat(?:\d+|-live)\.xml)$/i,
     'https://news.web.nhk/n-data/conf/na/rss/$1',
   );
 }
@@ -268,4 +324,14 @@ function hasMigratedRssFeedUrl(raw: unknown, merged: AppConfig): boolean {
     if (!isPlainObject(entry) || typeof entry.url !== 'string') return false;
     return merged.sources.rss.feeds[idx]?.url !== entry.url;
   });
+}
+
+function hasMigratedNhkBreakingUrl(raw: unknown, merged: AppConfig): boolean {
+  if (!isPlainObject(raw) || !isPlainObject(raw.sources) || !isPlainObject(raw.sources.nhkBreaking)) {
+    return false;
+  }
+  return (
+    typeof raw.sources.nhkBreaking.url === 'string' &&
+    raw.sources.nhkBreaking.url !== merged.sources.nhkBreaking.url
+  );
 }

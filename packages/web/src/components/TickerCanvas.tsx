@@ -1,5 +1,11 @@
 import { useEffect, useRef } from 'react';
-import type { ActivityBucket, AppConfig, NowPlayingState, TickerItem } from '@cathobar/shared';
+import type {
+  ActivityBucket,
+  AppConfig,
+  NowPlayingState,
+  SensorReading,
+  TickerItem,
+} from '@cathobar/shared';
 import { TickerEngine, type EngineStats } from '../engine/ticker-engine.js';
 
 interface TickerCanvasProps {
@@ -8,7 +14,11 @@ interface TickerCanvasProps {
   lastBatch: TickerItem[];
   activity: ActivityBucket[];
   nowPlaying?: NowPlayingState | null;
+  sensors?: SensorReading[];
+  transparent?: boolean;
+  paused?: boolean;
   onStats?: (stats: EngineStats) => void;
+  onEngineReady?: (engine: TickerEngine | null) => void;
   className?: string;
 }
 
@@ -18,7 +28,11 @@ export function TickerCanvas({
   lastBatch,
   activity,
   nowPlaying = null,
+  sensors = [],
+  transparent = false,
+  paused = false,
   onStats,
+  onEngineReady,
   className = '',
 }: TickerCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -34,10 +48,13 @@ export function TickerCanvas({
       onStatsRef.current?.(stats);
     });
     engineRef.current = engine;
+    onEngineReady?.(engine);
 
     const rect = canvas.getBoundingClientRect();
     engine.setViewportSize(rect.width, rect.height);
-    engine.syncState(items, activity, config, nowPlaying);
+    engine.setTransparent(transparent);
+    engine.setPaused(paused);
+    engine.syncState(items, activity, config, nowPlaying, sensors);
     engine.start();
 
     const ro = new ResizeObserver((entries) => {
@@ -52,13 +69,22 @@ export function TickerCanvas({
       ro.disconnect();
       engine.stop();
       engineRef.current = null;
+      onEngineReady?.(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    engineRef.current?.syncState(items, activity, config, nowPlaying);
-  }, [config, items, activity, nowPlaying]);
+    engineRef.current?.setTransparent(transparent);
+  }, [transparent]);
+
+  useEffect(() => {
+    engineRef.current?.setPaused(paused);
+  }, [paused]);
+
+  useEffect(() => {
+    engineRef.current?.syncState(items, activity, config, nowPlaying, sensors);
+  }, [config, items, activity, nowPlaying, sensors]);
 
   useEffect(() => {
     if (lastBatch.length > 0) {
@@ -74,10 +100,14 @@ export function TickerCanvas({
     engineRef.current?.updateNowPlaying(nowPlaying);
   }, [nowPlaying]);
 
+  useEffect(() => {
+    engineRef.current?.updateSensors(sensors);
+  }, [sensors]);
+
   return (
     <canvas
       ref={canvasRef}
-      className={`block h-full w-full bg-black ${className}`}
+      className={`block h-full w-full ${transparent ? 'bg-transparent' : 'bg-black'} ${className}`}
     />
   );
 }

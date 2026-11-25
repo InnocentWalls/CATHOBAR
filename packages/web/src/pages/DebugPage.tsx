@@ -18,12 +18,22 @@ import type { EngineStats } from '../engine/ticker-engine.js';
 import { useCathobar } from '../hooks/useCathobar.js';
 
 export function DebugPage() {
-  const { connected, config, items, lastBatch, activity, nowPlaying, updateConfig, pushMessage } =
-    useCathobar();
+  const {
+    connected,
+    config,
+    items,
+    lastBatch,
+    activity,
+    nowPlaying,
+    sensors,
+    updateConfig,
+    pushMessage,
+  } = useCathobar();
 
   const [simWidth, setSimWidth] = useState(1920);
   const [simHeight, setSimHeight] = useState(480);
   const [zoomMode, setZoomMode] = useState<'auto' | number>('auto');
+  const [transparentPreview, setTransparentPreview] = useState(false);
   const [containerW, setContainerW] = useState(1100);
   const [stats, setStats] = useState<EngineStats | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -224,8 +234,17 @@ export function DebugPage() {
         >
           <div className="rounded-2xl border-4 border-slate-700 bg-gradient-to-b from-slate-800 to-slate-900 p-3 shadow-2xl">
             <div
-              className="overflow-hidden rounded bg-black ring-1 ring-slate-600/50"
-              style={{ width: `${scaledW}px`, height: `${scaledH}px` }}
+              className="overflow-hidden rounded ring-1 ring-slate-600/50"
+              style={{
+                width: `${scaledW}px`,
+                height: `${scaledH}px`,
+                backgroundColor: transparentPreview ? '#1e293b' : '#000000',
+                backgroundImage: transparentPreview
+                  ? 'linear-gradient(45deg, #334155 25%, transparent 25%), linear-gradient(-45deg, #334155 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #334155 75%), linear-gradient(-45deg, transparent 75%, #334155 75%)'
+                  : undefined,
+                backgroundSize: transparentPreview ? '20px 20px' : undefined,
+                backgroundPosition: transparentPreview ? '0 0, 0 10px, 10px -10px, -10px 0' : undefined,
+              }}
             >
               <TickerCanvas
                 config={config}
@@ -233,6 +252,8 @@ export function DebugPage() {
                 lastBatch={lastBatch}
                 activity={activity}
                 nowPlaying={nowPlaying}
+                sensors={sensors}
+                transparent={transparentPreview}
                 onStats={setStats}
               />
             </div>
@@ -362,6 +383,18 @@ export function DebugPage() {
               }`}
             >
               スペアナ: {config.display.showSpectrumAnalyzer ? 'ON' : 'OFF'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTransparentPreview((t) => !t)}
+              className={`rounded border px-2 py-1 text-xs ${
+                transparentPreview
+                  ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200'
+                  : 'border-slate-800 bg-slate-950 text-slate-400'
+              }`}
+            >
+              透過プレビュー: {transparentPreview ? 'ON' : 'OFF'}
             </button>
 
             <button

@@ -92,6 +92,7 @@ export class CountdownSource implements TickerSource {
   readonly id = 'countdown' as const;
   private timer: ReturnType<typeof setInterval> | null = null;
   private triggeredIds = new Set<string>();
+  private lastEventsSignature = '';
 
   constructor(private readonly ctx: SourceContext) {}
 
@@ -104,6 +105,7 @@ export class CountdownSource implements TickerSource {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.lastEventsSignature = '';
     this.ctx.updateStatus({ id: this.id, active: false, connected: false });
   }
 
@@ -112,12 +114,18 @@ export class CountdownSource implements TickerSource {
       this.stop();
       return;
     }
-    if (!this.timer) {
+    const nextSig = JSON.stringify(config.sources.countdown.events);
+    const eventsChanged = nextSig !== this.lastEventsSignature;
+    const wasStopped = !this.timer;
+    if (wasStopped) {
       this.timer = setInterval(() => {
         void this.refreshNow();
       }, 30_000);
     }
-    void this.refreshNow();
+    if (wasStopped || eventsChanged) {
+      this.lastEventsSignature = nextSig;
+      void this.refreshNow();
+    }
   }
 
   async refreshNow(): Promise<void> {
@@ -127,6 +135,7 @@ export class CountdownSource implements TickerSource {
       return;
     }
 
+    this.lastEventsSignature = JSON.stringify(config.sources.countdown.events);
     const enabled = config.sources.countdown.events.filter((e) => e.enabled);
     const now = Date.now();
     const collected: TickerItem[] = [];

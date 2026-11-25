@@ -7,6 +7,8 @@ import {
   type NowPlayingState,
   type PartialAppConfig,
   type PushMessageInput,
+  type SensorPushInput,
+  type SensorReading,
   type SourceStatus,
   type TickerItem,
   type TickerSourceId,
@@ -18,14 +20,20 @@ export interface CathobarHookResult {
   config: AppConfig;
   items: TickerItem[];
   lastBatch: TickerItem[];
+  history: TickerItem[];
   activity: ActivityBucket[];
   statuses: SourceStatus[];
   lanUrls: string[];
   nowPlaying: NowPlayingState | null;
+  sensors: SensorReading[];
   updateConfig: (patch: PartialAppConfig) => Promise<void>;
+  importConfig: (raw: unknown) => Promise<boolean>;
+  applyScene: (sceneId: string) => Promise<void>;
   pushMessage: (input: PushMessageInput) => Promise<void>;
   pushNowPlaying: (input: NowPlayingPushInput) => Promise<void>;
+  pushSensor: (input: SensorPushInput) => Promise<void>;
   refreshSource: (id: TickerSourceId) => Promise<void>;
+  refreshHistory: () => Promise<void>;
 }
 
 export function useCathobar(): CathobarHookResult {
@@ -33,16 +41,41 @@ export function useCathobar(): CathobarHookResult {
   const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
   const [items, setItems] = useState<TickerItem[]>([]);
   const [lastBatch, setLastBatch] = useState<TickerItem[]>([]);
+  const [history, setHistory] = useState<TickerItem[]>([]);
   const [activity, setActivity] = useState<ActivityBucket[]>([]);
   const [statuses, setStatuses] = useState<SourceStatus[]>([]);
   const [lanUrls, setLanUrls] = useState<string[]>([]);
   const [nowPlaying, setNowPlaying] = useState<NowPlayingState | null>(null);
+  const [sensors, setSensors] = useState<SensorReading[]>([]);
   const reconnectTimer = useRef<number | null>(null);
+
+  const refreshHistory = useCallback(async () => {
+    try {
+      const res = await fetch('/api/history');
+      if (res.ok) {
+        const json = (await res.json()) as { items?: TickerItem[] };
+        if (Array.isArray(json.items)) {
+          setHistory(json.items);
+        }
+      }
+    } catch {
+      // ignore network errors
+    }
+  }, []);
 
   useEffect(() => {
     let active = true;
     let ws: WebSocket | null = null;
     let backoff = 1000;
+
+    const prependHistory = (incoming: TickerItem[]) => {
+      setHistory((prev) => {
+        const existingIds = new Set(prev.map((x) => x.id));
+        const fresh = incoming.filter((x) => !existingIds.has(x.id));
+        if (fresh.length === 0) return prev;
+        return [...fresh.reverse(), ...prev].slice(0, 120);
+      });
+    };
 
     const connect = () => {
       if (!active) return;
@@ -54,6 +87,7 @@ export function useCathobar(): CathobarHookResult {
         if (!active) return;
         setConnected(true);
         backoff = 1000;
+        void refreshHistory();
       };
 
       ws.onmessage = (ev) => {
@@ -68,6 +102,7 @@ export function useCathobar(): CathobarHookResult {
               setStatuses(msg.payload.statuses);
               setLanUrls(msg.payload.lanUrls);
               setNowPlaying(msg.payload.nowPlaying ?? null);
+              setSensors(msg.payload.sensors ?? []);
               break;
             case 'config:update':
               setConfig(msg.payload);
@@ -77,14 +112,20 @@ export function useCathobar(): CathobarHookResult {
                 setItems((prev) => [...prev.slice(-119), msg.payload]);
               }
               setLastBatch([msg.payload]);
+              prependHistory([msg.payload]);
               break;
             }
             case 'items:batch': {
               const persistent = msg.payload.filter((i) => !i.oneShot);
               if (persistent.length > 0) {
-                setItems((prev) => [...prev, ...persistent].slice(-120));
+                setItems((prev) => {
+                  const existingIds = new Set(prev.map((p) => p.id));
+                  const next = persistent.filter((p) => !existingIds.has(p.id));
+                  return next.length > 0 ? [...prev, ...next].slice(-120) : prev;
+                });
               }
               setLastBatch(msg.payload);
+              prependHistory(msg.payload);
               break;
             }
             case 'items:sync':
@@ -98,6 +139,9 @@ export function useCathobar(): CathobarHookResult {
               break;
             case 'nowplaying:update':
               setNowPlaying(msg.payload);
+              break;
+            case 'sensors:update':
+              setSensors(msg.payload);
               break;
           }
         } catch {
@@ -127,13 +171,37 @@ export function useCathobar(): CathobarHookResult {
       }
       ws?.close();
     };
-  }, []);
+  }, [refreshHistory]);
 
   const updateConfig = useCallback(async (patch: PartialAppConfig) => {
     const res = await fetch('/api/config', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
+    });
+    if (res.ok) {
+      const updated = (await res.json()) as AppConfig;
+      setConfig(updated);
+    }
+  }, []);
+
+  const importConfig = useCallback(async (raw: unknown): Promise<boolean> => {
+    const res = await fetch('/api/config/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(raw),
+    });
+    if (res.ok) {
+      const updated = (await res.json()) as AppConfig;
+      setConfig(updated);
+      return true;
+    }
+    return false;
+  }, []);
+
+  const applyScene = useCallback(async (sceneId: string) => {
+    const res = await fetch(`/api/scenes/${encodeURIComponent(sceneId)}/apply`, {
+      method: 'POST',
     });
     if (res.ok) {
       const updated = (await res.json()) as AppConfig;
@@ -157,6 +225,14 @@ export function useCathobar(): CathobarHookResult {
     });
   }, []);
 
+  const pushSensor = useCallback(async (input: SensorPushInput) => {
+    await fetch('/api/sensors', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  }, []);
+
   const refreshSource = useCallback(async (id: TickerSourceId) => {
     await fetch(`/api/sources/${id}/refresh`, { method: 'POST' });
   }, []);
@@ -166,13 +242,19 @@ export function useCathobar(): CathobarHookResult {
     config,
     items,
     lastBatch,
+    history,
     activity,
     statuses,
     lanUrls,
     nowPlaying,
+    sensors,
     updateConfig,
+    importConfig,
+    applyScene,
     pushMessage,
     pushNowPlaying,
+    pushSensor,
     refreshSource,
+    refreshHistory,
   };
 }

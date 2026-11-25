@@ -6,7 +6,8 @@ function str(val: unknown): string {
 }
 
 /**
- * Parses external webhook payloads for presets: generic, github, homeassistant, alert.
+ * Parses external webhook payloads for presets:
+ * generic, github, homeassistant, alert, uptime-kuma, alertmanager, discord, slack, gitlab, cloudflare.
  */
 export function parseWebhookPayload(
   preset: string,
@@ -26,7 +27,8 @@ export function parseWebhookPayload(
     if (ghEvent === 'push' || Array.isArray(obj.commits)) {
       const ref = str(obj.ref).replace('refs/heads/', '');
       const commits = Array.isArray(obj.commits) ? obj.commits : [];
-      const head = (obj.head_commit as Record<string, unknown> | undefined) ??
+      const head =
+        (obj.head_commit as Record<string, unknown> | undefined) ??
         (commits[0] as Record<string, unknown> | undefined);
       const msg = str(head?.message).split('\n')[0] || `${commits.length} commits`;
       return {
@@ -94,6 +96,152 @@ export function parseWebhookPayload(
       oneShot: true,
       breaking: false,
       icon: 'webhook',
+    };
+  }
+
+  if (normalizedPreset === 'gitlab') {
+    const kind = str(obj.object_kind) || str(headers['x-gitlab-event']).toLowerCase();
+    const proj = str((obj.project as Record<string, unknown> | undefined)?.path_with_namespace) || 'GitLab';
+    if (kind === 'pipeline') {
+      const attrs = obj.object_attributes as Record<string, unknown> | undefined;
+      const status = str(attrs?.status) || 'unknown';
+      const ref = str(attrs?.ref);
+      const failed = status === 'failed';
+      return {
+        id: `wh-gl-pipe-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        source: 'webhook',
+        badge: failed ? 'GL FAIL' : 'GITLAB CI',
+        text: `[${proj}${ref ? `:${ref}` : ''}] Pipeline ${status}`,
+        color: failed ? '#ef4444' : status === 'success' ? '#22c55e' : '#38bdf8',
+        timestamp: now,
+        priority: 'high',
+        oneShot: true,
+        breaking: failed,
+        icon: failed ? 'alert' : 'webhook',
+      };
+    }
+    const commits = Array.isArray(obj.commits) ? obj.commits : [];
+    const lastCommit = commits[0] as Record<string, unknown> | undefined;
+    const summary = str(lastCommit?.title) || str(obj.msg) || kind || 'GitLab Event';
+    return {
+      id: `wh-gl-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      source: 'webhook',
+      badge: 'GITLAB',
+      text: `[${proj}] ${summary}`,
+      color: '#fb923c',
+      timestamp: now,
+      priority: 'high',
+      oneShot: true,
+      breaking: false,
+      icon: 'webhook',
+    };
+  }
+
+  if (normalizedPreset === 'uptime-kuma' || normalizedPreset === 'uptimekuma') {
+    const heartbeat = obj.heartbeat as Record<string, unknown> | undefined;
+    const monitor = obj.monitor as Record<string, unknown> | undefined;
+    const name = str(monitor?.name) || str(obj.msg) || 'Monitor';
+    const statusNum = typeof heartbeat?.status === 'number' ? heartbeat.status : undefined;
+    const isDown = statusNum === 0;
+    const msg = str(heartbeat?.msg) || str(obj.msg);
+    const statusLabel = isDown ? 'DOWN' : statusNum === 1 ? 'UP' : 'STATUS';
+    return {
+      id: `wh-kuma-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      source: 'webhook',
+      badge: isDown ? 'DOWN' : 'UPTIME',
+      text: `[${name}] ${statusLabel}${msg ? ` — ${msg}` : ''}`,
+      color: isDown ? '#ef4444' : '#22c55e',
+      timestamp: now,
+      priority: 'high',
+      oneShot: true,
+      breaking: isDown,
+      icon: isDown ? 'alert' : 'webhook',
+    };
+  }
+
+  if (normalizedPreset === 'alertmanager') {
+    const status = str(obj.status) || 'firing';
+    const alerts = Array.isArray(obj.alerts) ? (obj.alerts as Array<Record<string, unknown>>) : [];
+    const first = alerts[0];
+    const labels = (first?.labels as Record<string, unknown> | undefined) ?? {};
+    const annotations = (first?.annotations as Record<string, unknown> | undefined) ?? {};
+    const alertName = str(labels.alertname) || str(obj.groupKey) || 'Alertmanager';
+    const severity = str(labels.severity).toLowerCase();
+    const summary = str(annotations.summary) || str(annotations.description) || `${alerts.length} alerts`;
+    const isFiring = status.toLowerCase() === 'firing';
+    const isCritical = isFiring && (severity === 'critical' || severity === 'page');
+    return {
+      id: `wh-am-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      source: 'webhook',
+      badge: isFiring ? 'ALERT' : 'RESOLVED',
+      text: `[${alertName}] ${summary}`,
+      color: isFiring ? (isCritical ? '#ff2a22' : '#f59e0b') : '#22c55e',
+      timestamp: now,
+      priority: 'high',
+      oneShot: true,
+      breaking: isCritical,
+      icon: isFiring ? 'alert' : 'webhook',
+    };
+  }
+
+  if (normalizedPreset === 'discord') {
+    const embeds = Array.isArray(obj.embeds) ? (obj.embeds as Array<Record<string, unknown>>) : [];
+    const embedTitle = str(embeds[0]?.title);
+    const embedDesc = str(embeds[0]?.description);
+    const content = str(obj.content) || [embedTitle, embedDesc].filter(Boolean).join(': ');
+    if (!content) return null;
+    const username = str(obj.username) || 'DISCORD';
+    return {
+      id: `wh-dc-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      source: 'webhook',
+      badge: username.slice(0, 20),
+      text: content,
+      color: '#818cf8',
+      timestamp: now,
+      priority: 'high',
+      oneShot: true,
+      breaking: false,
+      icon: 'webhook',
+    };
+  }
+
+  if (normalizedPreset === 'slack') {
+    const attachments = Array.isArray(obj.attachments)
+      ? (obj.attachments as Array<Record<string, unknown>>)
+      : [];
+    const attText = str(attachments[0]?.fallback) || str(attachments[0]?.text);
+    const text = str(obj.text) || attText;
+    if (!text) return null;
+    const badge = str(obj.username) || str(obj.channel) || 'SLACK';
+    return {
+      id: `wh-sl-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      source: 'webhook',
+      badge: badge.slice(0, 20),
+      text,
+      color: '#38fad9',
+      timestamp: now,
+      priority: 'high',
+      oneShot: true,
+      breaking: false,
+      icon: 'webhook',
+    };
+  }
+
+  if (normalizedPreset === 'cloudflare') {
+    const text = str(obj.text) || str(obj.message) || str(obj.alert_type);
+    if (!text) return null;
+    const alertType = str(obj.alert_type);
+    return {
+      id: `wh-cf-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      source: 'webhook',
+      badge: 'CF',
+      text: alertType && !text.includes(alertType) ? `[${alertType}] ${text}` : text,
+      color: '#fb923c',
+      timestamp: now,
+      priority: 'high',
+      oneShot: true,
+      breaking: obj.breaking === true,
+      icon: obj.breaking === true ? 'alert' : 'webhook',
     };
   }
 

@@ -7,6 +7,7 @@ import { ZodError } from 'zod';
 import {
   NowPlayingPushInputSchema,
   PushMessageInputSchema,
+  SensorPushInputSchema,
   TickerSourceIdSchema,
 } from '@cathobar/shared';
 import type { TickerHub } from './hub.js';
@@ -40,8 +41,39 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
     return c.json(hub.getState());
   });
 
+  app.get('/api/history', (c) => {
+    return c.json({ items: hub.getHistory() });
+  });
+
   app.get('/api/config', (c) => {
     return c.json(hub.getConfig());
+  });
+
+  app.get('/api/config/export', (c) => {
+    const json = `${JSON.stringify(hub.getConfig(), null, 2)}\n`;
+    return new Response(json, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="cathobar-config.json"',
+      },
+    });
+  });
+
+  app.post('/api/config/import', async (c) => {
+    try {
+      const body = await c.req.json();
+      const updated = await hub.replaceConfig(body);
+      return c.json(updated);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        return c.json({ error: 'Invalid configuration payload', issues: err.issues }, 400);
+      }
+      return c.json(
+        { error: err instanceof Error ? err.message : 'Failed to import config' },
+        400,
+      );
+    }
   });
 
   app.patch('/api/config', async (c) => {
@@ -58,6 +90,15 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
         400,
       );
     }
+  });
+
+  app.post('/api/scenes/:id/apply', async (c) => {
+    const id = c.req.param('id');
+    const updated = await hub.applyScene(id);
+    if (!updated) {
+      return c.json({ error: 'Scene not found' }, 404);
+    }
+    return c.json(updated);
   });
 
   app.post('/api/push', async (c) => {
@@ -88,6 +129,24 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
     }
   });
 
+  app.get('/api/sensors', (c) => {
+    return c.json({ sensors: hub.getSensors() });
+  });
+
+  app.post('/api/sensors', async (c) => {
+    try {
+      const body = await c.req.json();
+      const parsed = SensorPushInputSchema.parse(body);
+      const reading = hub.pushSensorReading(parsed);
+      return c.json({ ok: true, sensor: reading }, 201);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        return c.json({ error: 'Invalid sensor payload', issues: err.issues }, 400);
+      }
+      return c.json({ error: 'Failed to parse JSON body' }, 400);
+    }
+  });
+
   app.post('/api/webhook/:preset', async (c) => {
     const whCfg = hub.getConfig().sources.webhook;
     if (!whCfg.enabled) {
@@ -110,6 +169,7 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
       const body = await c.req.json();
       const item = hub.pushWebhook(preset, body, {
         'x-github-event': c.req.header('x-github-event'),
+        'x-gitlab-event': c.req.header('x-gitlab-event'),
       });
       if (!item) {
         return c.json({ error: 'Could not extract message from webhook payload' }, 400);
@@ -127,6 +187,10 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
     }
     const ok = await hub.refreshSource(idResult.data);
     return c.json({ ok, id: idResult.data });
+  });
+
+  app.get('/api/transit/lines', (c) => {
+    return c.json({ lines: hub.getTransitLines() });
   });
 
   app.get('/api/geocode', async (c) => {

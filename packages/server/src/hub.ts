@@ -7,20 +7,28 @@ import {
   type AppConfig,
   type NowPlayingPushInput,
   type NowPlayingState,
+  type PartialAppConfig,
   type PushMessageInput,
+  type SensorPushInput,
+  type SensorReading,
   type ServerState,
   type SourceStatus,
   type TickerItem,
   type TickerSourceId,
+  type TransitDiscoveredLine,
   type WsMessage,
 } from '@cathobar/shared';
 import { ConfigStore } from './config-store.js';
+import { CalendarSource } from './sources/calendar.js';
 import { CountdownSource } from './sources/countdown.js';
 import { EarthquakeSource } from './sources/earthquake.js';
 import { MarketSource } from './sources/market.js';
 import { MastodonSource } from './sources/mastodon.js';
+import { NhkBreakingSource } from './sources/nhk-breaking.js';
 import { NowPlayingSource } from './sources/nowplaying.js';
 import { RssSource } from './sources/rss.js';
+import { SensorsSource } from './sources/sensors.js';
+import { SysmonSource } from './sources/sysmon.js';
 import { TransitSource } from './sources/transit.js';
 import type { SourceContext, TickerSource } from './sources/types.js';
 import { WeatherSource } from './sources/weather.js';
@@ -28,6 +36,7 @@ import { parseWebhookPayload } from './sources/webhook.js';
 import { WikipediaSource } from './sources/wikipedia.js';
 
 const MAX_RECENT_ITEMS = 120;
+const MAX_HISTORY_ITEMS = 120;
 const BUCKET_MS = 10_000;
 const MAX_BUCKETS = 48;
 
@@ -38,18 +47,25 @@ function normalizeTitleForDedupe(text: string): string {
 export class TickerHub {
   private readonly clients = new Set<WebSocket>();
   private readonly items: TickerItem[] = [];
+  private readonly history: TickerItem[] = [];
   private readonly seenIds = new Set<string>();
   private readonly sources = new Map<TickerSourceId, TickerSource>();
   private readonly statuses = new Map<TickerSourceId, SourceStatus>();
   private readonly activityMap = new Map<number, number>();
   private readonly nowPlayingSource: NowPlayingSource;
+  private readonly transitSource: TransitSource;
+  private readonly sensorsSource: SensorsSource;
   private nowPlaying: NowPlayingState | null = null;
+  private sensors: SensorReading[] = [];
   private activityTimer: ReturnType<typeof setInterval> | null = null;
+  private sceneTimer: ReturnType<typeof setInterval> | null = null;
+  private appliedSceneKey = '';
   private port = 3000;
 
   constructor(private readonly configStore: ConfigStore) {
     const initialIds: TickerSourceId[] = [
       'rss',
+      'nhk-breaking',
       'wikipedia',
       'weather',
       'mastodon',
@@ -58,6 +74,9 @@ export class TickerHub {
       'market',
       'nowplaying',
       'countdown',
+      'sysmon',
+      'calendar',
+      'sensors',
       'clock',
       'push',
       'webhook',
@@ -80,20 +99,27 @@ export class TickerHub {
       retainSourceKeyItems: (sourceKey, keepIds) => this.retainSourceKeyItems(sourceKey, keepIds),
       updateStatus: (partial) => this.updateStatus(partial),
       updateNowPlaying: (state) => this.setNowPlayingState(state),
+      updateSensors: (readings) => this.setSensorsState(readings),
     };
 
     this.nowPlayingSource = new NowPlayingSource(ctx);
+    this.transitSource = new TransitSource(ctx);
+    this.sensorsSource = new SensorsSource(ctx);
 
     const instances: TickerSource[] = [
       new RssSource(ctx),
+      new NhkBreakingSource(ctx),
       new WikipediaSource(ctx),
       new WeatherSource(ctx),
       new MastodonSource(ctx),
       new EarthquakeSource(ctx),
-      new TransitSource(ctx),
+      this.transitSource,
       new MarketSource(ctx),
       this.nowPlayingSource,
       new CountdownSource(ctx),
+      new SysmonSource(ctx),
+      new CalendarSource(ctx),
+      this.sensorsSource,
     ];
 
     for (const src of instances) {
@@ -118,12 +144,21 @@ export class TickerHub {
         this.broadcast({ type: 'activity:update', payload: this.getActivityBuckets() });
       }, 5000);
     }
+    if (!this.sceneTimer) {
+      this.sceneTimer = setInterval(() => {
+        void this.checkSceneSchedule();
+      }, 30_000);
+    }
   }
 
   stop(): void {
     if (this.activityTimer) {
       clearInterval(this.activityTimer);
       this.activityTimer = null;
+    }
+    if (this.sceneTimer) {
+      clearInterval(this.sceneTimer);
+      this.sceneTimer = null;
     }
     for (const src of this.sources.values()) {
       src.stop();
@@ -172,6 +207,7 @@ export class TickerHub {
       statuses: Array.from(this.statuses.values()),
       lanUrls: this.getLanUrls(),
       nowPlaying: this.nowPlaying,
+      sensors: this.sensors,
     };
   }
 
@@ -179,25 +215,53 @@ export class TickerHub {
     return this.configStore.get();
   }
 
+  getHistory(): TickerItem[] {
+    return [...this.history];
+  }
+
+  getSensors(): SensorReading[] {
+    return [...this.sensors];
+  }
+
   async updateConfig(patch: unknown): Promise<AppConfig> {
     const updated = await this.configStore.patch(patch);
-    const pruned = this.pruneStaleItems(updated);
+    return this.applyUpdatedConfig(updated);
+  }
 
-    this.updateStatus({
-      id: 'webhook',
-      active: updated.sources.webhook.enabled,
-      connected: updated.sources.webhook.enabled,
-    });
+  async replaceConfig(raw: unknown): Promise<AppConfig> {
+    const updated = await this.configStore.replace(raw);
+    return this.applyUpdatedConfig(updated);
+  }
 
-    for (const src of this.sources.values()) {
-      src.onConfigUpdate(updated);
+  async applyScene(sceneId: string): Promise<AppConfig | null> {
+    const current = this.configStore.get();
+    const scene = current.scenes.find((s) => s.id === sceneId);
+    if (!scene) return null;
+
+    const patch: PartialAppConfig = {};
+    if (scene.activeChannel !== undefined) patch.activeChannel = scene.activeChannel;
+    if (scene.rotationEnabled !== undefined) {
+      patch.rotation = { enabled: scene.rotationEnabled };
     }
-    this.broadcast({ type: 'config:update', payload: updated });
-    if (pruned) {
-      this.broadcast({ type: 'items:sync', payload: [...this.items] });
+    const displayPatch: NonNullable<PartialAppConfig['display']> = {};
+    if (scene.visualMode !== undefined) displayPatch.visualMode = scene.visualMode;
+    if (scene.vfdPalette !== undefined) displayPatch.vfdPalette = scene.vfdPalette;
+    if (scene.layoutMode !== undefined) displayPatch.layoutMode = scene.layoutMode;
+    if (scene.brightness !== undefined) displayPatch.brightness = scene.brightness;
+    if (scene.showSpectrumAnalyzer !== undefined) {
+      displayPatch.showSpectrumAnalyzer = scene.showSpectrumAnalyzer;
     }
-    this.broadcast({ type: 'status:update', payload: Array.from(this.statuses.values()) });
-    return updated;
+    if (scene.showClockOverlay !== undefined) {
+      displayPatch.showClockOverlay = scene.showClockOverlay;
+    }
+    if (scene.showActivityGraph !== undefined) {
+      displayPatch.showActivityGraph = scene.showActivityGraph;
+    }
+    if (Object.keys(displayPatch).length > 0) {
+      patch.display = displayPatch;
+    }
+
+    return this.updateConfig(patch);
   }
 
   async refreshSource(id: TickerSourceId): Promise<boolean> {
@@ -205,6 +269,10 @@ export class TickerHub {
     if (!src) return false;
     await src.refreshNow();
     return true;
+  }
+
+  getTransitLines(): TransitDiscoveredLine[] {
+    return this.transitSource.getDiscoveredLines();
   }
 
   pushMessage(input: PushMessageInput): TickerItem {
@@ -226,6 +294,10 @@ export class TickerHub {
 
   pushNowPlaying(input: NowPlayingPushInput): NowPlayingState {
     return this.nowPlayingSource.applyExternalPush(input);
+  }
+
+  pushSensorReading(input: SensorPushInput): SensorReading {
+    return this.sensorsSource.applyExternalPush(input);
   }
 
   pushWebhook(
@@ -255,12 +327,57 @@ export class TickerHub {
     return urls;
   }
 
+  private applyUpdatedConfig(updated: AppConfig): AppConfig {
+    const pruned = this.pruneStaleItems(updated);
+
+    this.updateStatus({
+      id: 'webhook',
+      active: updated.sources.webhook.enabled,
+      connected: updated.sources.webhook.enabled,
+    });
+
+    for (const src of this.sources.values()) {
+      src.onConfigUpdate(updated);
+    }
+    this.broadcast({ type: 'config:update', payload: updated });
+    if (pruned) {
+      this.broadcast({ type: 'items:sync', payload: [...this.items] });
+    }
+    this.broadcast({ type: 'status:update', payload: Array.from(this.statuses.values()) });
+    return updated;
+  }
+
+  private async checkSceneSchedule(): Promise<void> {
+    const now = new Date();
+    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const dayKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${hhmm}`;
+    const cfg = this.configStore.get();
+    for (const scene of cfg.scenes) {
+      if (scene.scheduleStart && scene.scheduleStart === hhmm) {
+        const key = `${scene.id}:${dayKey}`;
+        if (this.appliedSceneKey === key) return;
+        this.appliedSceneKey = key;
+        await this.applyScene(scene.id);
+        return;
+      }
+    }
+  }
+
   private setNowPlayingState(state: NowPlayingState | null): void {
     const prevJson = JSON.stringify(this.nowPlaying);
     const nextJson = JSON.stringify(state);
     this.nowPlaying = state;
     if (prevJson !== nextJson) {
       this.broadcast({ type: 'nowplaying:update', payload: state });
+    }
+  }
+
+  private setSensorsState(readings: SensorReading[]): void {
+    const prevJson = JSON.stringify(this.sensors);
+    const nextJson = JSON.stringify(readings);
+    this.sensors = readings;
+    if (prevJson !== nextJson) {
+      this.broadcast({ type: 'sensors:update', payload: readings });
     }
   }
 
@@ -284,7 +401,7 @@ export class TickerHub {
         continue;
       }
 
-      if (config.filtering.dedupeTitles && !item.oneShot && !item.replaceKey) {
+      if (config.filtering.dedupeTitles && !item.oneShot && !item.replaceKey && !item.breaking) {
         const norm = normalizeTitleForDedupe(item.text);
         if (norm.length >= 6 && existingNormalized.has(norm)) {
           continue;
@@ -300,6 +417,8 @@ export class TickerHub {
         status.itemCount += 1;
         status.lastFetchAt = item.timestamp;
       }
+
+      this.recordHistory(item);
 
       if (item.oneShot) {
         fresh.push(item);
@@ -332,9 +451,9 @@ export class TickerHub {
 
     if (replacedAny) {
       this.broadcast({ type: 'items:sync', payload: [...this.items] });
-      const oneShots = fresh.filter((x) => x.oneShot);
-      if (oneShots.length > 0) {
-        this.broadcast({ type: 'items:batch', payload: oneShots });
+      const alertTriggers = fresh.filter((x) => x.oneShot || x.breaking);
+      if (alertTriggers.length > 0) {
+        this.broadcast({ type: 'items:batch', payload: alertTriggers });
       }
     } else if (fresh.length === 1 && fresh[0]) {
       this.broadcast({ type: 'item:new', payload: fresh[0] });
@@ -344,6 +463,18 @@ export class TickerHub {
 
     this.broadcast({ type: 'activity:update', payload: this.getActivityBuckets() });
     this.broadcast({ type: 'status:update', payload: Array.from(this.statuses.values()) });
+  }
+
+  private recordHistory(item: TickerItem): void {
+    // Avoid flooding history with repetitive sysmon ticks when text didn't meaningfully change
+    if (item.source === 'sysmon' && this.history[0]?.source === 'sysmon') {
+      this.history[0] = item;
+      return;
+    }
+    this.history.unshift(item);
+    if (this.history.length > MAX_HISTORY_ITEMS) {
+      this.history.length = MAX_HISTORY_ITEMS;
+    }
   }
 
   private pruneStaleItems(config: AppConfig): boolean {

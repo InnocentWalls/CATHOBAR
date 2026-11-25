@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { XMLParser } from 'fast-xml-parser';
 import {
   isChannelActiveInConfig,
   type AppConfig,
@@ -7,44 +6,7 @@ import {
   type TickerItem,
 } from '@cathobar/shared';
 import { cleanText, type SourceContext, type TickerSource } from './types.js';
-
-const xmlParser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: '@_',
-  trimValues: true,
-});
-
-function toArray<T>(val: T | T[] | undefined | null): T[] {
-  if (!val) return [];
-  return Array.isArray(val) ? val : [val];
-}
-
-function extractText(field: unknown): string {
-  if (typeof field === 'string') return field;
-  if (typeof field === 'number') return String(field);
-  if (field && typeof field === 'object') {
-    const obj = field as Record<string, unknown>;
-    if (typeof obj['#text'] === 'string') return obj['#text'];
-  }
-  return '';
-}
-
-function extractLink(field: unknown): string | undefined {
-  if (typeof field === 'string') return field;
-  if (Array.isArray(field)) {
-    for (const entry of field) {
-      const href = extractLink(entry);
-      if (href) return href;
-    }
-    return undefined;
-  }
-  if (field && typeof field === 'object') {
-    const obj = field as Record<string, unknown>;
-    if (typeof obj['@_href'] === 'string') return obj['@_href'];
-    if (typeof obj['#text'] === 'string') return obj['#text'];
-  }
-  return undefined;
-}
+import { extractLink, extractText, toArray, xmlParser } from './xml-utils.js';
 
 /**
  * Parses RSS 2.0, Atom, and RSS 1.0 (RDF) XML feeds into TickerItems.
@@ -54,100 +16,76 @@ export function parseRssXml(xml: string, feed: RssFeedConfig): TickerItem[] {
   const now = Date.now();
   const color = feed.color ?? '#38bdf8';
 
+  const buildItem = (titleRaw: unknown, linkRaw: unknown): TickerItem | null => {
+    const title = cleanText(extractText(titleRaw));
+    if (!title) return null;
+    const url = extractLink(linkRaw);
+    const id = createHash('sha1').update(`${feed.id}:${url ?? title}`).digest('hex').slice(0, 16);
+    return {
+      id: `rss-${id}`,
+      source: 'rss',
+      badge: feed.name,
+      text: title,
+      color,
+      timestamp: now,
+      priority: 'normal',
+      oneShot: false,
+      breaking: false,
+      icon: 'news',
+      sourceKey: `rss:${feed.id}`,
+      url,
+    };
+  };
+
   const rssChannel = (parsed.rss as Record<string, unknown> | undefined)?.channel as
     | Record<string, unknown>
     | undefined;
   if (rssChannel) {
     return toArray(rssChannel.item as Record<string, unknown>[])
       .slice(0, 12)
-      .map((item) => {
-        const title = cleanText(extractText(item.title));
-        const url = extractLink(item.link);
-        const id = createHash('sha1').update(`${feed.id}:${url ?? title}`).digest('hex').slice(0, 16);
-        return {
-          id: `rss-${id}`,
-          source: 'rss' as const,
-          badge: feed.name,
-          text: title,
-          color,
-          timestamp: now,
-          priority: 'normal' as const,
-          oneShot: false,
-          breaking: false,
-          icon: 'news' as const,
-          sourceKey: `rss:${feed.id}`,
-          url,
-        };
-      })
-      .filter((x) => x.text.length > 0);
+      .map((item) => buildItem(item.title, item.link))
+      .filter((x): x is TickerItem => x !== null);
   }
 
   const atomFeed = parsed.feed as Record<string, unknown> | undefined;
   if (atomFeed) {
     return toArray(atomFeed.entry as Record<string, unknown>[])
       .slice(0, 12)
-      .map((entry) => {
-        const title = cleanText(extractText(entry.title));
-        const url = extractLink(entry.link);
-        const id = createHash('sha1').update(`${feed.id}:${url ?? title}`).digest('hex').slice(0, 16);
-        return {
-          id: `rss-${id}`,
-          source: 'rss' as const,
-          badge: feed.name,
-          text: title,
-          color,
-          timestamp: now,
-          priority: 'normal' as const,
-          oneShot: false,
-          breaking: false,
-          icon: 'news' as const,
-          sourceKey: `rss:${feed.id}`,
-          url,
-        };
-      })
-      .filter((x) => x.text.length > 0);
+      .map((entry) => buildItem(entry.title, entry.link))
+      .filter((x): x is TickerItem => x !== null);
   }
 
   const rdf = parsed['rdf:RDF'] as Record<string, unknown> | undefined;
   if (rdf) {
     return toArray(rdf.item as Record<string, unknown>[])
       .slice(0, 12)
-      .map((item) => {
-        const title = cleanText(extractText(item.title));
-        const url = extractLink(item.link);
-        const id = createHash('sha1').update(`${feed.id}:${url ?? title}`).digest('hex').slice(0, 16);
-        return {
-          id: `rss-${id}`,
-          source: 'rss' as const,
-          badge: feed.name,
-          text: title,
-          color,
-          timestamp: now,
-          priority: 'normal' as const,
-          oneShot: false,
-          breaking: false,
-          icon: 'news' as const,
-          sourceKey: `rss:${feed.id}`,
-          url,
-        };
-      })
-      .filter((x) => x.text.length > 0);
+      .map((item) => buildItem(item.title, item.link))
+      .filter((x): x is TickerItem => x !== null);
   }
 
   return [];
+}
+
+function buildFeedsSignature(feeds: RssFeedConfig[]): string {
+  return feeds
+    .filter((f) => f.enabled)
+    .map((f) => `${f.id}:${f.name}:${f.url}:${f.color ?? ''}`)
+    .join('|');
 }
 
 export class RssSource implements TickerSource {
   readonly id = 'rss' as const;
   private timer: ReturnType<typeof setInterval> | null = null;
   private seenIdsByFeed = new Map<string, Set<string>>();
+  private etagByFeed = new Map<string, string>();
+  private lastModifiedByFeed = new Map<string, string>();
   private pollIntervalSec = 300;
+  private lastFeedsSignature = '';
 
   constructor(private readonly ctx: SourceContext) {}
 
   start(): void {
-    this.syncTimer();
-    void this.refreshNow();
+    this.onConfigUpdate(this.ctx.getConfig());
   }
 
   stop(): void {
@@ -156,6 +94,9 @@ export class RssSource implements TickerSource {
       this.timer = null;
     }
     this.seenIdsByFeed.clear();
+    this.etagByFeed.clear();
+    this.lastModifiedByFeed.clear();
+    this.lastFeedsSignature = '';
     this.ctx.updateStatus({ id: this.id, active: false, connected: false });
   }
 
@@ -166,6 +107,8 @@ export class RssSource implements TickerSource {
     for (const feedId of this.seenIdsByFeed.keys()) {
       if (!enabledFeedIds.has(feedId)) {
         this.seenIdsByFeed.delete(feedId);
+        this.etagByFeed.delete(feedId);
+        this.lastModifiedByFeed.delete(feedId);
       }
     }
 
@@ -175,11 +118,20 @@ export class RssSource implements TickerSource {
       this.stop();
       return;
     }
-    if (this.pollIntervalSec !== config.sources.rss.pollIntervalSec || !this.timer) {
+
+    const nextSig = buildFeedsSignature(config.sources.rss.feeds);
+    const intervalChanged = this.pollIntervalSec !== config.sources.rss.pollIntervalSec;
+    const feedsChanged = this.lastFeedsSignature !== nextSig;
+    const wasStopped = !this.timer;
+
+    if (wasStopped || intervalChanged) {
       this.pollIntervalSec = config.sources.rss.pollIntervalSec;
       this.syncTimer();
     }
-    void this.refreshNow();
+    if (wasStopped || intervalChanged || feedsChanged) {
+      this.lastFeedsSignature = nextSig;
+      void this.refreshNow();
+    }
   }
 
   async refreshNow(): Promise<void> {
@@ -192,6 +144,7 @@ export class RssSource implements TickerSource {
     }
 
     const enabledFeeds = config.sources.rss.feeds.filter((f) => f.enabled);
+    this.lastFeedsSignature = buildFeedsSignature(config.sources.rss.feeds);
     if (enabledFeeds.length === 0) {
       this.ctx.updateStatus({
         id: this.id,
@@ -203,19 +156,36 @@ export class RssSource implements TickerSource {
     }
 
     this.ctx.updateStatus({ id: this.id, active: true });
-    const perFeedResults: Array<{ feedId: string; items: TickerItem[] }> = [];
+    const perFeedResults: Array<{ feedId: string; items: TickerItem[]; notModified?: boolean }> = [];
     const errors: string[] = [];
 
     await Promise.all(
       enabledFeeds.map(async (feed) => {
         try {
+          const headers: Record<string, string> = {
+            'User-Agent': 'CATHOBAR/0.2 (+https://localhost)',
+          };
+          const prevEtag = this.etagByFeed.get(feed.id);
+          const prevLastMod = this.lastModifiedByFeed.get(feed.id);
+          if (prevEtag) headers['If-None-Match'] = prevEtag;
+          if (prevLastMod) headers['If-Modified-Since'] = prevLastMod;
+
           const res = await fetch(feed.url, {
-            headers: { 'User-Agent': 'CATHOBAR/0.1 (+https://localhost)' },
+            headers,
             signal: AbortSignal.timeout(10_000),
           });
+          if (res.status === 304) {
+            perFeedResults.push({ feedId: feed.id, items: [], notModified: true });
+            return;
+          }
           if (!res.ok) {
             throw new Error(`HTTP ${res.status}`);
           }
+          const nextEtag = res.headers?.get?.('etag');
+          const nextLastMod = res.headers?.get?.('last-modified');
+          if (nextEtag) this.etagByFeed.set(feed.id, nextEtag);
+          if (nextLastMod) this.lastModifiedByFeed.set(feed.id, nextLastMod);
+
           const xml = await res.text();
           const items = parseRssXml(xml, feed);
           perFeedResults.push({ feedId: feed.id, items });
@@ -236,9 +206,9 @@ export class RssSource implements TickerSource {
       latestConfig.sources.rss.feeds.filter((f) => f.enabled).map((f) => f.id),
     );
     const collected: TickerItem[] = [];
-    for (const { feedId, items } of perFeedResults) {
+    for (const { feedId, items, notModified } of perFeedResults) {
       if (!latestEnabledFeedIds.has(feedId)) continue;
-      if (items.length === 0) continue;
+      if (notModified || items.length === 0) continue;
       const currentIds = new Set(items.map((item) => item.id));
       this.ctx.retainSourceKeyItems(`rss:${feedId}`, currentIds);
       const prevSeen = this.seenIdsByFeed.get(feedId) ?? new Set<string>();

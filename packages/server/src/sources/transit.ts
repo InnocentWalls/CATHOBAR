@@ -1,55 +1,59 @@
+import { createHash } from 'node:crypto';
 import {
   isChannelActiveInConfig,
+  RAILWAY_NAME_MAP,
   type AppConfig,
   type TickerItem,
+  type TransitDiscoveredLine,
   type TransitSourceConfig,
 } from '@cathobar/shared';
 import { parseRssXml } from './rss.js';
 import { cleanText, type SourceContext, type TickerSource } from './types.js';
 
-const RAILWAY_NAME_MAP: Record<string, string> = {
-  'Toei.Asakusa': '都営浅草線',
-  'Toei.Mita': '都営三田線',
-  'Toei.Shinjuku': '都営新宿線',
-  'Toei.Oedo': '都営大江戸線',
-  'Toei.Arakawa': '東京さくらトラム',
-  'Toei.NipporiToneri': '日暮里・舎人ライナー',
-  'TokyoMetro.Ginza': '東京メトロ銀座線',
-  'TokyoMetro.Marunouchi': '東京メトロ丸ノ内線',
-  'TokyoMetro.Hibiya': '東京メトロ日比谷線',
-  'TokyoMetro.Tozai': '東京メトロ東西線',
-  'TokyoMetro.Chiyoda': '東京メトロ千代田線',
-  'TokyoMetro.Yurakucho': '東京メトロ有楽町線',
-  'TokyoMetro.Hanzomon': '東京メトロ半蔵門線',
-  'TokyoMetro.Namboku': '東京メトロ南北線',
-  'TokyoMetro.Fukutoshin': '東京メトロ副都心線',
-  'JR-East.Yamanote': 'JR山手線',
-  'JR-East.ChuoRapid': 'JR中央線快速',
-  'JR-East.ChuoSobuLocal': 'JR中央・総武線',
-  'JR-East.KeihinTohokuNegishi': 'JR京浜東北線',
-  'JR-East.Tokaido': 'JR東海道線',
-  'JR-East.SaikyoKawagoe': 'JR埼京線',
-  'JR-East.ShonanShinjuku': 'JR湘南新宿ライン',
-  'JR-East.SobuRapid': 'JR総武線快速',
-  'JR-East.Joban': 'JR常磐線',
-  'JR-East.Keiyo': 'JR京葉線',
+const OPERATOR_NAME_MAP: Record<string, string> = {
+  Toei: '都営',
+  TokyoMetro: '東京メトロ',
+  'JR-East': 'JR東日本',
+  Tokyu: '東急',
+  Odakyu: '小田急',
+  Keio: '京王',
+  Seibu: '西武',
+  Tobu: '東武',
+  Keikyu: '京急',
+  Keisei: '京成',
+  Sotetsu: '相鉄',
+  MIR: 'つくばエクスプレス',
+  TWR: 'りんかい線',
+  Yurikamome: 'ゆりかもめ',
 };
 
 interface OdptTrainInfoEntry {
   'owl:sameAs'?: string;
   'odpt:railway'?: string;
+  'odpt:operator'?: string;
   'odpt:railwayTitle'?: { ja?: string; en?: string };
   'odpt:trainInformationStatus'?: { ja?: string; en?: string };
   'odpt:trainInformationText'?: { ja?: string; en?: string };
 }
 
-function resolveLineName(entry: OdptTrainInfoEntry): string {
-  const titleJa = entry['odpt:railwayTitle']?.ja?.trim();
-  if (titleJa) return titleJa;
-
+function resolveLineInfo(entry: OdptTrainInfoEntry): {
+  shortKey: string;
+  canonicalName: string | undefined;
+  lineName: string;
+  operator: string;
+} {
   const rawRailway = entry['odpt:railway'] ?? entry['owl:sameAs'] ?? '';
   const shortKey = rawRailway.split(':').pop() ?? rawRailway;
-  return RAILWAY_NAME_MAP[shortKey] ?? shortKey.replace('.', ' ');
+  const canonicalName = RAILWAY_NAME_MAP[shortKey];
+  const titleJa = entry['odpt:railwayTitle']?.ja?.trim();
+  const lineName = titleJa || canonicalName || shortKey.replace('.', ' ');
+
+  const rawOp = entry['odpt:operator'] ?? '';
+  const opFromField = rawOp.split(':').pop() ?? '';
+  const opPrefix = opFromField || (shortKey.includes('.') ? shortKey.split('.')[0] ?? '' : '');
+  const operator = OPERATOR_NAME_MAP[opPrefix] ?? (opPrefix || 'その他');
+
+  return { shortKey, canonicalName, lineName, operator };
 }
 
 function isNormalOperation(statusText: string, bodyText: string): boolean {
@@ -66,43 +70,68 @@ function isSevereSuspension(statusText: string, bodyText: string): boolean {
 }
 
 /**
- * Parses ODPT TrainInformation JSON array into normalized TickerItems.
+ * Parses ODPT TrainInformation JSON array into normalized TickerItems and discovered line metadata.
  */
 export function parseOdptTrainInfo(
   raw: unknown,
   cfg: TransitSourceConfig,
   prevSuspendedKeys?: Set<string>,
-): { items: TickerItem[]; suspendedKeys: Set<string> } {
+): {
+  items: TickerItem[];
+  suspendedKeys: Set<string>;
+  discoveredLines: TransitDiscoveredLine[];
+} {
   if (!Array.isArray(raw)) {
-    return { items: [], suspendedKeys: new Set() };
+    return { items: [], suspendedKeys: new Set(), discoveredLines: [] };
   }
 
   const items: TickerItem[] = [];
   const suspendedKeys = new Set<string>();
+  const discoveredLines: TransitDiscoveredLine[] = [];
   const now = Date.now();
   const normalizedFilters = cfg.lineFilter.map((f) => f.trim().toLowerCase()).filter(Boolean);
 
   for (const entry of raw as OdptTrainInfoEntry[]) {
     if (!entry || typeof entry !== 'object') continue;
-    const lineName = resolveLineName(entry);
+    const { shortKey, canonicalName, lineName, operator } = resolveLineInfo(entry);
     if (!lineName) continue;
-
-    if (
-      normalizedFilters.length > 0 &&
-      !normalizedFilters.some((f) => lineName.toLowerCase().includes(f))
-    ) {
-      continue;
-    }
 
     const statusText = cleanText(entry['odpt:trainInformationStatus']?.ja ?? '');
     const bodyText = cleanText(entry['odpt:trainInformationText']?.ja ?? '');
     const normal = isNormalOperation(statusText, bodyText);
+    const severe = !normal && isSevereSuspension(statusText, bodyText);
+    const summary =
+      statusText && !bodyText.includes(statusText)
+        ? `${statusText} — ${bodyText}`
+        : bodyText || statusText || '平常運転';
+
+    const railwayKey = entry['odpt:railway'] ?? entry['owl:sameAs'] ?? lineName;
+    discoveredLines.push({
+      id: shortKey || railwayKey,
+      railwayKey,
+      name: lineName,
+      operator,
+      normal,
+      severe,
+      statusText: summary,
+    });
+
+    const candidates = [lineName, canonicalName, shortKey]
+      .filter((v): v is string => Boolean(v))
+      .map((v) => v.toLowerCase());
+
+    if (
+      normalizedFilters.length > 0 &&
+      !normalizedFilters.some((f) => candidates.some((c) => c.includes(f)))
+    ) {
+      continue;
+    }
+
     if (cfg.onlyProblems && normal) {
       continue;
     }
 
-    const severe = !normal && isSevereSuspension(statusText, bodyText);
-    const key = `transit:odpt:${entry['odpt:railway'] ?? entry['owl:sameAs'] ?? lineName}`;
+    const key = `transit:odpt:${railwayKey}`;
     if (severe) {
       suspendedKeys.add(key);
     }
@@ -113,12 +142,13 @@ export function parseOdptTrainInfo(
       prevSuspendedKeys !== undefined &&
       !prevSuspendedKeys.has(key);
 
-    const summary = statusText && !bodyText.includes(statusText)
-      ? `${statusText} — ${bodyText}`
-      : bodyText || statusText || '平常運転';
+    const contentHash = createHash('sha1')
+      .update(`${key}|${summary}|${severe ? 'S' : normal ? 'N' : 'D'}`)
+      .digest('hex')
+      .slice(0, 16);
 
     items.push({
-      id: `${key}-${now}`,
+      id: `transit-odpt-${contentHash}`,
       source: 'transit',
       badge: `運行:${lineName}`,
       text: summary,
@@ -133,7 +163,7 @@ export function parseOdptTrainInfo(
     });
   }
 
-  return { items, suspendedKeys };
+  return { items, suspendedKeys, discoveredLines };
 }
 
 export class TransitSource implements TickerSource {
@@ -142,8 +172,19 @@ export class TransitSource implements TickerSource {
   private pollIntervalSec = 180;
   private knownSuspendedKeys: Set<string> | undefined = undefined;
   private seenFeedIds = new Set<string>();
+  private discoveredLines: TransitDiscoveredLine[] = [];
+  private lastOdptRawPayloads: unknown[] = [];
+  private lastEndpointSignature = '';
+  private lastFilterSignature = '';
 
   constructor(private readonly ctx: SourceContext) {}
+
+  getDiscoveredLines(): TransitDiscoveredLine[] {
+    return [...this.discoveredLines].sort((a, b) => {
+      const opCmp = a.operator.localeCompare(b.operator, 'ja');
+      return opCmp !== 0 ? opCmp : a.name.localeCompare(b.name, 'ja');
+    });
+  }
 
   start(): void {
     this.onConfigUpdate(this.ctx.getConfig());
@@ -162,9 +203,24 @@ export class TransitSource implements TickerSource {
       this.stop();
       return;
     }
-    const intervalChanged = this.pollIntervalSec !== config.sources.transit.pollIntervalSec;
-    if (!this.timer || intervalChanged) {
-      this.pollIntervalSec = config.sources.transit.pollIntervalSec;
+
+    const t = config.sources.transit;
+    const nextEndpointSig = this.getEndpointSignature(t);
+    const nextFilterSig = this.getFilterSignature(t);
+
+    const intervalChanged = this.pollIntervalSec !== t.pollIntervalSec;
+    const endpointChanged = this.lastEndpointSignature !== nextEndpointSig;
+    const filterChanged = this.lastFilterSignature !== nextFilterSig;
+
+    this.lastEndpointSignature = nextEndpointSig;
+    this.lastFilterSignature = nextFilterSig;
+
+    if (filterChanged && this.lastOdptRawPayloads.length > 0 && !endpointChanged) {
+      this.applyCachedOdptFilter(t);
+    }
+
+    if (!this.timer || intervalChanged || endpointChanged) {
+      this.pollIntervalSec = t.pollIntervalSec;
       this.syncTimer();
       void this.refreshNow();
     }
@@ -178,6 +234,8 @@ export class TransitSource implements TickerSource {
     }
 
     const t = config.sources.transit;
+    this.lastEndpointSignature = this.getEndpointSignature(t);
+    this.lastFilterSignature = this.getFilterSignature(t);
     this.ctx.updateStatus({ id: this.id, active: true });
 
     const endpoints: string[] = [];
@@ -192,6 +250,9 @@ export class TransitSource implements TickerSource {
 
     const collected: TickerItem[] = [];
     const nextSuspended = new Set<string>();
+    const rawPayloads: unknown[] = [];
+    const discoveredMap = new Map<string, TransitDiscoveredLine>();
+    const odptKeepIds = new Set<string>();
     const errors: string[] = [];
     let successCount = 0;
 
@@ -204,8 +265,15 @@ export class TransitSource implements TickerSource {
           });
           if (!res.ok) throw new Error(`ODPT HTTP ${res.status}`);
           const json = (await res.json()) as unknown;
+          rawPayloads.push(json);
           const parsed = parseOdptTrainInfo(json, t, this.knownSuspendedKeys);
-          collected.push(...parsed.items);
+          for (const line of parsed.discoveredLines) {
+            discoveredMap.set(line.railwayKey, line);
+          }
+          for (const item of parsed.items) {
+            odptKeepIds.add(item.id);
+            collected.push(item);
+          }
           for (const k of parsed.suspendedKeys) nextSuspended.add(k);
           successCount += 1;
         } catch (err) {
@@ -214,6 +282,13 @@ export class TransitSource implements TickerSource {
       }),
     );
 
+    if (rawPayloads.length > 0 || endpoints.length === 0) {
+      this.lastOdptRawPayloads = rawPayloads;
+      this.discoveredLines = Array.from(discoveredMap.values());
+      this.ctx.retainSourceKeyItems('transit:odpt', odptKeepIds);
+    }
+
+    const normalizedFilters = t.lineFilter.map((f) => f.trim().toLowerCase()).filter(Boolean);
     const enabledFeeds = t.customFeeds.filter((f) => f.enabled);
     await Promise.all(
       enabledFeeds.map(async (feed) => {
@@ -224,13 +299,19 @@ export class TransitSource implements TickerSource {
           });
           if (!res.ok) throw new Error(`${feed.name} HTTP ${res.status}`);
           const xml = await res.text();
-          const feedItems = parseRssXml(xml, feed).map((it) => ({
-            ...it,
-            id: `transit-${it.id}`,
-            source: 'transit' as const,
-            icon: 'train' as const,
-            sourceKey: `transit:feed:${feed.id}`,
-          }));
+          const feedItems = parseRssXml(xml, feed)
+            .map((it) => ({
+              ...it,
+              id: `transit-${it.id}`,
+              source: 'transit' as const,
+              icon: 'train' as const,
+              sourceKey: `transit:feed:${feed.id}`,
+            }))
+            .filter((it) => {
+              if (normalizedFilters.length === 0) return true;
+              const target = `${it.badge} ${it.text}`.toLowerCase();
+              return normalizedFilters.some((f) => target.includes(f));
+            });
           const keepIds = new Set(feedItems.map((i) => i.id));
           this.ctx.retainSourceKeyItems(`transit:feed:${feed.id}`, keepIds);
           for (const item of feedItems) {
@@ -263,6 +344,48 @@ export class TransitSource implements TickerSource {
       connected: totalSources > 0 && successCount > 0,
       lastFetchAt: Date.now(),
       lastError: errors.length > 0 ? errors.join('; ') : null,
+    });
+  }
+
+  private applyCachedOdptFilter(t: TransitSourceConfig): void {
+    const collected: TickerItem[] = [];
+    const nextSuspended = new Set<string>();
+    const discoveredMap = new Map<string, TransitDiscoveredLine>();
+    const odptKeepIds = new Set<string>();
+
+    for (const raw of this.lastOdptRawPayloads) {
+      const parsed = parseOdptTrainInfo(raw, t, this.knownSuspendedKeys);
+      for (const line of parsed.discoveredLines) {
+        discoveredMap.set(line.railwayKey, line);
+      }
+      for (const item of parsed.items) {
+        odptKeepIds.add(item.id);
+        collected.push(item);
+      }
+      for (const k of parsed.suspendedKeys) nextSuspended.add(k);
+    }
+
+    this.discoveredLines = Array.from(discoveredMap.values());
+    this.knownSuspendedKeys = nextSuspended;
+    this.ctx.retainSourceKeyItems('transit:odpt', odptKeepIds);
+    if (collected.length > 0) {
+      this.ctx.emitItems(collected);
+    }
+  }
+
+  private getEndpointSignature(t: TransitSourceConfig): string {
+    return JSON.stringify({
+      usePublicOdpt: t.usePublicOdpt,
+      odptToken: t.odptToken.trim(),
+      customFeeds: t.customFeeds,
+    });
+  }
+
+  private getFilterSignature(t: TransitSourceConfig): string {
+    return JSON.stringify({
+      lineFilter: t.lineFilter,
+      onlyProblems: t.onlyProblems,
+      breakingOnSuspension: t.breakingOnSuspension,
     });
   }
 

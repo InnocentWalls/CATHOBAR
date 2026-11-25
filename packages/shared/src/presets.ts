@@ -3,6 +3,7 @@ import type {
   ChannelId,
   LayoutMode,
   MarketSymbolConfig,
+  ScenePreset,
   ShinkansenScrollStyle,
   SourceWeights,
   VfdPalette,
@@ -14,6 +15,63 @@ export const DEFAULT_MARKET_SYMBOLS: MarketSymbolConfig[] = [
   { id: 'nikkei225', symbol: '^N225', label: '日経平均', enabled: true },
   { id: 'sp500', symbol: '^GSPC', label: 'S&P 500', enabled: true },
   { id: 'btcjpy', symbol: 'BTC-JPY', label: 'BTC/JPY', enabled: true },
+];
+
+export const DEFAULT_SCENE_PRESETS: ScenePreset[] = [
+  {
+    id: 'work',
+    name: '仕事モード',
+    activeChannel: 'all',
+    rotationEnabled: false,
+    visualMode: 'anobar8-vfd',
+    vfdPalette: 'cyan',
+    layoutMode: 'lanes',
+    brightness: 1.15,
+    showSpectrumAnalyzer: false,
+    showClockOverlay: true,
+    showActivityGraph: true,
+    scheduleStart: '',
+  },
+  {
+    id: 'music',
+    name: '音楽鑑賞',
+    activeChannel: 'nowplaying',
+    rotationEnabled: false,
+    visualMode: 'anobar-fed',
+    layoutMode: 'lanes',
+    brightness: 1.25,
+    showSpectrumAnalyzer: true,
+    showClockOverlay: true,
+    showActivityGraph: false,
+    scheduleStart: '',
+  },
+  {
+    id: 'train-news',
+    name: '車内ニュース',
+    activeChannel: 'rss',
+    rotationEnabled: false,
+    visualMode: 'shinkansen-led',
+    layoutMode: 'lanes',
+    brightness: 1.15,
+    showSpectrumAnalyzer: false,
+    showClockOverlay: true,
+    showActivityGraph: true,
+    scheduleStart: '',
+  },
+  {
+    id: 'night-watch',
+    name: '夜間防災監視',
+    activeChannel: 'disaster',
+    rotationEnabled: false,
+    visualMode: 'anobar8-vfd',
+    vfdPalette: 'amber',
+    layoutMode: 'lanes',
+    brightness: 0.45,
+    showSpectrumAnalyzer: false,
+    showClockOverlay: true,
+    showActivityGraph: false,
+    scheduleStart: '',
+  },
 ];
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -42,9 +100,19 @@ export const DEFAULT_CONFIG: AppConfig = {
     breakingAlertEnabled: true,
     breakingAlertDurationSec: 10,
     breakingAlertSound: false,
+    breakingAlertVolume: 0.5,
     showSpectrumAnalyzer: true,
     spectrumAudioInput: 'auto',
   },
+  nightMode: {
+    enabled: false,
+    startTime: '23:00',
+    endTime: '07:00',
+    behavior: 'dim',
+    brightness: 0.35,
+    forceAmberVfd: true,
+  },
+  scenes: DEFAULT_SCENE_PRESETS,
   rotation: {
     enabled: false,
     intervalSec: 45,
@@ -63,6 +131,9 @@ export const DEFAULT_CONFIG: AppConfig = {
       market: 2,
       nowplaying: 2,
       countdown: 1,
+      sysmon: 1,
+      calendar: 2,
+      sensors: 2,
       webhook: 2,
     },
   },
@@ -87,6 +158,12 @@ export const DEFAULT_CONFIG: AppConfig = {
         },
       ],
     },
+    nhkBreaking: {
+      enabled: true,
+      pollIntervalSec: 60,
+      url: 'https://news.web.nhk/n-data/conf/na/rss/cat-live.xml',
+      maxItemAgeMinutes: 30,
+    },
     wikipedia: {
       enabled: true,
       lang: 'ja',
@@ -102,8 +179,12 @@ export const DEFAULT_CONFIG: AppConfig = {
           latitude: 35.6762,
           longitude: 139.6503,
           enabled: true,
+          jmaAreaCode: '130000',
         },
       ],
+      rainAlertEnabled: true,
+      rainAlertBreaking: false,
+      jmaWarningEnabled: true,
     },
     mastodon: {
       enabled: false,
@@ -148,6 +229,29 @@ export const DEFAULT_CONFIG: AppConfig = {
     countdown: {
       enabled: true,
       events: [],
+    },
+    sysmon: {
+      enabled: true,
+      pollIntervalSec: 15,
+      highTempThresholdC: 80,
+      alertOnHighTemp: true,
+    },
+    calendar: {
+      enabled: false,
+      pollIntervalSec: 300,
+      feeds: [],
+      windowHours: 24,
+      alertBeforeMinutes: 5,
+    },
+    sensors: {
+      enabled: true,
+      pollIntervalSec: 120,
+      co2AlertPpm: 1200,
+      alertOnHighCo2: false,
+      switchbotToken: '',
+      switchbotSecret: '',
+      switchbotDeviceIds: [],
+      natureRemoToken: '',
     },
     webhook: {
       enabled: true,
@@ -197,6 +301,14 @@ export const VISUAL_MODE_LABELS: Record<VisualMode, { label: string; description
     label: '東北新幹線 (3色LED)',
     description: '丸型LED素子＋緑・橙・赤の3色ドットマトリクス＆車内ニュース風演出',
   },
+  'split-flap': {
+    label: 'パタパタ (反転フラップ)',
+    description: '空港・旧駅の発車標風メカニカル反転フラップ表示',
+  },
+  'station-board': {
+    label: '在来線 発車標 (2カラムLED)',
+    description: '左側に種別・ソースバッジを固定し、右側に本文を流す駅発車標スタイル',
+  },
   clean: {
     label: 'クリーン (モダン表示)',
     description: 'ドット加工を抑えた高精細・高視認性モード',
@@ -236,12 +348,13 @@ export const CHANNEL_LABELS: Record<ChannelId, { label: string; short: string }>
   all: { label: 'ALL MIX (全チャンネル)', short: 'ALL' },
   rss: { label: 'RSS / ニュース', short: 'RSS' },
   wikipedia: { label: 'Wikipedia ランダム', short: 'WIKI' },
-  weather: { label: '天気予報', short: 'WTHR' },
+  weather: { label: '天気予報・気象警報', short: 'WTHR' },
   mastodon: { label: 'Mastodon タイムライン', short: 'MAST' },
   disaster: { label: '防災・鉄道運行情報', short: 'SAFE' },
   market: { label: '市況・為替・株', short: 'MKT' },
   nowplaying: { label: 'Now Playing', short: 'PLAY' },
-  countdown: { label: 'カウントダウン', short: 'CNTD' },
+  countdown: { label: '予定・カウントダウン', short: 'CNTD' },
+  system: { label: 'システム・室内環境', short: 'SYS' },
   clock: { label: '時計 / ステータス', short: 'CLK' },
 };
 
@@ -262,15 +375,16 @@ export interface CityPreset {
   name: string;
   latitude: number;
   longitude: number;
+  jmaAreaCode: string;
 }
 
 export const CITY_PRESETS: CityPreset[] = [
-  { name: '東京', latitude: 35.6762, longitude: 139.6503 },
-  { name: '大阪', latitude: 34.6937, longitude: 135.5023 },
-  { name: '札幌', latitude: 43.0618, longitude: 141.3545 },
-  { name: '名古屋', latitude: 35.1815, longitude: 136.9066 },
-  { name: '福岡', latitude: 33.5902, longitude: 130.4017 },
-  { name: '那覇', latitude: 26.2124, longitude: 127.6809 },
+  { name: '東京', latitude: 35.6762, longitude: 139.6503, jmaAreaCode: '130000' },
+  { name: '大阪', latitude: 34.6937, longitude: 135.5023, jmaAreaCode: '270000' },
+  { name: '札幌', latitude: 43.0618, longitude: 141.3545, jmaAreaCode: '016000' },
+  { name: '名古屋', latitude: 35.1815, longitude: 136.9066, jmaAreaCode: '230000' },
+  { name: '福岡', latitude: 33.5902, longitude: 130.4017, jmaAreaCode: '400000' },
+  { name: '那覇', latitude: 26.2124, longitude: 127.6809, jmaAreaCode: '471000' },
 ];
 
 export interface MarketSymbolPreset {
@@ -303,7 +417,7 @@ export const EARTHQUAKE_SCALE_OPTIONS: Array<{ value: number; label: string }> =
 
 export const SOURCE_WEIGHT_LABELS: Record<keyof SourceWeights, string> = {
   rss: 'RSS ニュース',
-  weather: '天気予報',
+  weather: '天気・気象警報',
   mastodon: 'Mastodon',
   wikipedia: 'Wikipedia',
   earthquake: '地震・津波',
@@ -311,5 +425,134 @@ export const SOURCE_WEIGHT_LABELS: Record<keyof SourceWeights, string> = {
   market: '市況・為替',
   nowplaying: 'Now Playing',
   countdown: 'カウントダウン',
+  sysmon: 'システム監視',
+  calendar: 'カレンダー予定',
+  sensors: '室内環境センサー',
   webhook: 'Webhook',
 };
+
+export interface TransitLinePreset {
+  name: string;
+  odptKey?: string;
+}
+
+export interface TransitOperatorGroup {
+  id: string;
+  label: string;
+  note: string;
+  lines: TransitLinePreset[];
+}
+
+export const TRANSIT_OPERATOR_GROUPS: TransitOperatorGroup[] = [
+  {
+    id: 'toei',
+    label: '都営地下鉄・東京都交通局',
+    note: 'ODPT公開API（キー不要）',
+    lines: [
+      { name: '都営浅草線', odptKey: 'Toei.Asakusa' },
+      { name: '都営三田線', odptKey: 'Toei.Mita' },
+      { name: '都営新宿線', odptKey: 'Toei.Shinjuku' },
+      { name: '都営大江戸線', odptKey: 'Toei.Oedo' },
+      { name: '東京さくらトラム', odptKey: 'Toei.Arakawa' },
+      { name: '日暮里・舎人ライナー', odptKey: 'Toei.NipporiToneri' },
+    ],
+  },
+  {
+    id: 'tokyo-metro',
+    label: '東京メトロ',
+    note: '要ODPTキー',
+    lines: [
+      { name: '東京メトロ銀座線', odptKey: 'TokyoMetro.Ginza' },
+      { name: '東京メトロ丸ノ内線', odptKey: 'TokyoMetro.Marunouchi' },
+      { name: '東京メトロ日比谷線', odptKey: 'TokyoMetro.Hibiya' },
+      { name: '東京メトロ東西線', odptKey: 'TokyoMetro.Tozai' },
+      { name: '東京メトロ千代田線', odptKey: 'TokyoMetro.Chiyoda' },
+      { name: '東京メトロ有楽町線', odptKey: 'TokyoMetro.Yurakucho' },
+      { name: '東京メトロ半蔵門線', odptKey: 'TokyoMetro.Hanzomon' },
+      { name: '東京メトロ南北線', odptKey: 'TokyoMetro.Namboku' },
+      { name: '東京メトロ副都心線', odptKey: 'TokyoMetro.Fukutoshin' },
+    ],
+  },
+  {
+    id: 'jr-east',
+    label: 'JR東日本',
+    note: '要ODPTキー',
+    lines: [
+      { name: 'JR山手線', odptKey: 'JR-East.Yamanote' },
+      { name: 'JR京浜東北線', odptKey: 'JR-East.KeihinTohokuNegishi' },
+      { name: 'JR中央線快速', odptKey: 'JR-East.ChuoRapid' },
+      { name: 'JR中央・総武線', odptKey: 'JR-East.ChuoSobuLocal' },
+      { name: 'JR東海道線', odptKey: 'JR-East.Tokaido' },
+      { name: 'JR横須賀線', odptKey: 'JR-East.Yokosuka' },
+      { name: 'JR埼京線', odptKey: 'JR-East.SaikyoKawagoe' },
+      { name: 'JR湘南新宿ライン', odptKey: 'JR-East.ShonanShinjuku' },
+      { name: 'JR総武線快速', odptKey: 'JR-East.SobuRapid' },
+      { name: 'JR常磐線', odptKey: 'JR-East.Joban' },
+      { name: 'JR常磐線快速', odptKey: 'JR-East.JobanRapid' },
+      { name: 'JR京葉線', odptKey: 'JR-East.Keiyo' },
+      { name: 'JR南武線', odptKey: 'JR-East.Nambu' },
+      { name: 'JR横浜線', odptKey: 'JR-East.Yokohama' },
+      { name: 'JR武蔵野線', odptKey: 'JR-East.Musashino' },
+      { name: 'JR高崎線', odptKey: 'JR-East.Takasaki' },
+      { name: 'JR宇都宮線', odptKey: 'JR-East.Utsunomiya' },
+    ],
+  },
+  {
+    id: 'kanto-private',
+    label: '首都圏私鉄・その他',
+    note: '要ODPTキー / カスタムRSS',
+    lines: [
+      { name: '東急東横線', odptKey: 'Tokyu.Toyoko' },
+      { name: '東急田園都市線', odptKey: 'Tokyu.DenEnToshi' },
+      { name: '東急目黒線', odptKey: 'Tokyu.Meguro' },
+      { name: '東急池上線', odptKey: 'Tokyu.Ikegami' },
+      { name: '東急大井町線', odptKey: 'Tokyu.Oimachi' },
+      { name: '東急多摩川線', odptKey: 'Tokyu.Tamagawa' },
+      { name: '小田急小田原線', odptKey: 'Odakyu.Odawara' },
+      { name: '小田急江ノ島線', odptKey: 'Odakyu.Enoshima' },
+      { name: '小田急多摩線', odptKey: 'Odakyu.Tama' },
+      { name: '京王線', odptKey: 'Keio.Keio' },
+      { name: '京王井の頭線', odptKey: 'Keio.Inokashira' },
+      { name: '西武池袋線', odptKey: 'Seibu.Ikebukuro' },
+      { name: '西武新宿線', odptKey: 'Seibu.Shinjuku' },
+      { name: '東武東上線', odptKey: 'Tobu.Tojo' },
+      { name: '東武スカイツリーライン', odptKey: 'Tobu.TobuSkytree' },
+      { name: '京急本線', odptKey: 'Keikyu.Main' },
+      { name: '京成本線', odptKey: 'Keisei.Main' },
+      { name: '相鉄本線', odptKey: 'Sotetsu.Main' },
+      { name: 'つくばエクスプレス', odptKey: 'MIR.TsukubaExpress' },
+      { name: 'りんかい線', odptKey: 'TWR.Rinkai' },
+      { name: 'ゆりかもめ', odptKey: 'Yurikamome.Yurikamome' },
+    ],
+  },
+  {
+    id: 'nationwide',
+    label: '新幹線・全国主要路線',
+    note: 'カスタムRSS等',
+    lines: [
+      { name: '東海道新幹線' },
+      { name: '東北新幹線' },
+      { name: '山陽新幹線' },
+      { name: '北陸新幹線' },
+      { name: 'JR京都線' },
+      { name: 'JR神戸線' },
+      { name: '大阪環状線' },
+      { name: '阪急神戸線' },
+      { name: '阪急京都線' },
+      { name: '阪神本線' },
+      { name: '京阪本線' },
+      { name: '近鉄奈良線' },
+      { name: '名鉄名古屋本線' },
+      { name: '福岡市地下鉄空港線' },
+      { name: '札幌市営地下鉄南北線' },
+    ],
+  },
+];
+
+export const RAILWAY_NAME_MAP: Record<string, string> = Object.fromEntries(
+  TRANSIT_OPERATOR_GROUPS.flatMap((group) =>
+    group.lines
+      .filter((line): line is { name: string; odptKey: string } => Boolean(line.odptKey))
+      .map((line) => [line.odptKey, line.name]),
+  ),
+);

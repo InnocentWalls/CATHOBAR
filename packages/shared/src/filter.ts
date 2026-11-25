@@ -13,8 +13,17 @@ export function sourceMatchesChannel(source: TickerSourceId, channel: ChannelId)
   if (channel === 'clock') return false;
   if (channel === 'all') return source !== 'clock';
   if (source === 'push' || source === 'webhook') return true;
+  if (source === 'nhk-breaking') {
+    return channel === 'rss' || channel === 'disaster';
+  }
   if (channel === 'disaster') {
     return source === 'earthquake' || source === 'transit';
+  }
+  if (channel === 'countdown') {
+    return source === 'countdown' || source === 'calendar';
+  }
+  if (channel === 'system') {
+    return source === 'sysmon' || source === 'sensors';
   }
   return source === channel;
 }
@@ -83,13 +92,16 @@ export function isItemEnabledBySources(item: TickerItem, sources: SourcesConfig)
       }
       return sources.rss.feeds.length === 0 || sources.rss.feeds.some((f) => f.enabled);
     }
+    case 'nhk-breaking':
+      return sources.nhkBreaking.enabled;
     case 'wikipedia':
       return sources.wikipedia.enabled;
     case 'weather': {
       if (!sources.weather.enabled) return false;
       const key = item.sourceKey ?? item.replaceKey;
-      if (key) {
-        return sources.weather.locations.some((l) => l.enabled && `weather:${l.id}` === key);
+      if (key && key.startsWith('weather:')) {
+        const locId = key.slice('weather:'.length);
+        return sources.weather.locations.some((l) => l.enabled && l.id === locId);
       }
       return (
         sources.weather.locations.length === 0 ||
@@ -128,6 +140,18 @@ export function isItemEnabledBySources(item: TickerItem, sources: SourcesConfig)
       }
       return true;
     }
+    case 'sysmon':
+      return sources.sysmon.enabled;
+    case 'calendar': {
+      if (!sources.calendar.enabled) return false;
+      if (item.sourceKey && item.sourceKey.startsWith('calendar:')) {
+        const feedId = item.sourceKey.slice('calendar:'.length);
+        return sources.calendar.feeds.some((f) => f.enabled && f.id === feedId);
+      }
+      return sources.calendar.feeds.length === 0 || sources.calendar.feeds.some((f) => f.enabled);
+    }
+    case 'sensors':
+      return sources.sensors.enabled;
     case 'webhook':
       return sources.webhook.enabled;
     case 'push':

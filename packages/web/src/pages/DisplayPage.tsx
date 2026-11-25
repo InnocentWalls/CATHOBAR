@@ -1,17 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CHANNEL_LABELS,
+  ChannelIdSchema,
   LAYOUT_MODE_LABELS,
   VFD_PALETTES,
   VISUAL_MODE_LABELS,
+  VisualModeSchema,
   type ChannelId,
   type LayoutMode,
   type VfdPalette,
   type VisualMode,
 } from '@cathobar/shared';
-import { Maximize2, Monitor, SlidersHorizontal } from 'lucide-react';
+import { Maximize2, Monitor, Pause, Play, QrCode, SlidersHorizontal, X } from 'lucide-react';
 import { TickerCanvas } from '../components/TickerCanvas.js';
-import type { EngineStats } from '../engine/ticker-engine.js';
+import { unlockAlertAudio } from '../engine/alert-audio.js';
+import { renderQrSvg } from '../engine/qrcode.js';
+import type { EngineStats, TickerEngine } from '../engine/ticker-engine.js';
 import { useCathobar } from '../hooks/useCathobar.js';
 
 const CHANNEL_ORDER: ChannelId[] = [
@@ -24,19 +28,61 @@ const CHANNEL_ORDER: ChannelId[] = [
   'market',
   'nowplaying',
   'countdown',
+  'system',
   'clock',
 ];
-const MODE_ORDER: VisualMode[] = ['anobar8-vfd', 'anobar-fed', 'shinkansen-led', 'clean'];
+const MODE_ORDER: VisualMode[] = [
+  'anobar8-vfd',
+  'anobar-fed',
+  'shinkansen-led',
+  'split-flap',
+  'station-board',
+  'clean',
+];
 const PALETTE_ORDER: VfdPalette[] = ['cyan', 'green', 'white', 'amber'];
 const LAYOUT_ORDER: LayoutMode[] = ['auto', 'lanes', 'danmaku'];
 
 export function DisplayPage() {
-  const { connected, config, items, lastBatch, activity, nowPlaying, updateConfig } = useCathobar();
+  const { connected, config, items, lastBatch, activity, lanUrls, nowPlaying, sensors, updateConfig } =
+    useCathobar();
+
+  const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const isTransparent = urlParams.get('transparent') === '1' || urlParams.get('transparent') === 'true';
+  const hideHudForever = urlParams.get('hideHud') === '1';
+
+  const effectiveConfig = useMemo(() => {
+    const chParam = urlParams.get('channel');
+    const modeParam = urlParams.get('mode');
+    const chOk = chParam ? ChannelIdSchema.safeParse(chParam) : null;
+    const modeOk = modeParam ? VisualModeSchema.safeParse(modeParam) : null;
+    if (!chOk?.success && !modeOk?.success) return config;
+    return {
+      ...config,
+      activeChannel: chOk?.success ? chOk.data : config.activeChannel,
+      display: modeOk?.success ? { ...config.display, visualMode: modeOk.data } : config.display,
+    };
+  }, [config, urlParams]);
+
   const [hudVisible, setHudVisible] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [showQr, setShowQr] = useState(false);
   const [stats, setStats] = useState<EngineStats | null>(null);
   const hideTimer = useRef<number | null>(null);
+  const engineRef = useRef<TickerEngine | null>(null);
+
+  useEffect(() => {
+    if (isTransparent) {
+      document.documentElement.style.background = 'transparent';
+      document.body.style.background = 'transparent';
+    }
+    return () => {
+      document.documentElement.style.background = '';
+      document.body.style.background = '';
+    };
+  }, [isTransparent]);
 
   const showHudTemporarily = useCallback(() => {
+    if (hideHudForever) return;
     setHudVisible(true);
     if (hideTimer.current !== null) {
       clearTimeout(hideTimer.current);
@@ -44,13 +90,23 @@ export function DisplayPage() {
     hideTimer.current = window.setTimeout(() => {
       setHudVisible(false);
     }, 4000);
-  }, []);
+  }, [hideHudForever]);
 
   useEffect(() => {
     return () => {
       if (hideTimer.current !== null) {
         clearTimeout(hideTimer.current);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlock = () => unlockAlertAudio();
+    window.addEventListener('pointerdown', unlock, { once: true });
+    window.addEventListener('keydown', unlock, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
     };
   }, []);
 
@@ -67,6 +123,16 @@ export function DisplayPage() {
           void updateConfig({ activeChannel: nextCh });
           showHudTemporarily();
         }
+      } else if (key === ' ') {
+        e.preventDefault();
+        setPaused((p) => !p);
+        showHudTemporarily();
+      } else if (e.key === 'ArrowLeft') {
+        engineRef.current?.nudgeScroll(24);
+      } else if (e.key === 'ArrowRight') {
+        engineRef.current?.nudgeScroll(-24);
+      } else if (key === 'q') {
+        setShowQr((q) => !q);
       } else if (key === 'v') {
         const curIdx = MODE_ORDER.indexOf(config.display.visualMode);
         const nextMode = MODE_ORDER[(curIdx + 1) % MODE_ORDER.length]!;
@@ -111,142 +177,196 @@ export function DisplayPage() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [config.display, config.rotation.enabled, showHudTemporarily, updateConfig]);
 
+  const adminQrUrl = `${lanUrls[0] ?? window.location.origin}/admin`;
+  const qrSvg = useMemo(() => (showQr ? renderQrSvg(adminQrUrl, 160) : ''), [showQr, adminQrUrl]);
+
   return (
     <div
-      className="relative h-screen w-screen overflow-hidden bg-black select-none"
+      className={`relative h-screen w-screen overflow-hidden select-none ${
+        isTransparent ? 'bg-transparent' : 'bg-black'
+      }`}
       onMouseMove={showHudTemporarily}
       onTouchStart={showHudTemporarily}
     >
       <TickerCanvas
-        config={config}
+        config={effectiveConfig}
         items={items}
         lastBatch={lastBatch}
         activity={activity}
         nowPlaying={nowPlaying}
+        sensors={sensors}
+        transparent={isTransparent}
+        paused={paused}
         onStats={setStats}
+        onEngineReady={(eng) => {
+          engineRef.current = eng;
+        }}
       />
 
-      {!connected && (
+      {!connected && !isTransparent && (
         <div className="pointer-events-none absolute bottom-2 right-2 rounded bg-red-950/80 px-2 py-0.5 font-mono text-[10px] text-red-300">
           RECONNECTING...
         </div>
       )}
 
-      <div
-        className={`absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-2 bg-slate-950/85 px-3 py-1.5 backdrop-blur-md transition-opacity duration-300 ${
-          hudVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
-        }`}
-      >
-        <div className="flex flex-wrap items-center gap-1">
-          {CHANNEL_ORDER.map((ch, idx) => {
-            const keyHint = idx === 9 ? '0' : String(idx + 1);
-            const isHighlighted =
-              stats?.rotating ? stats.effectiveChannel === ch : config.activeChannel === ch;
-            return (
-              <button
-                key={ch}
-                type="button"
-                onClick={() => void updateConfig({ activeChannel: ch })}
-                className={`rounded px-2 py-0.5 text-xs font-medium transition ${
-                  isHighlighted
-                    ? 'bg-cyan-500 text-slate-950'
-                    : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'
-                }`}
-              >
-                {keyHint}:{CHANNEL_LABELS[ch].short}
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            onClick={() => void updateConfig({ rotation: { enabled: !config.rotation.enabled } })}
-            className={`rounded px-2 py-0.5 text-xs font-medium ${
-              config.rotation.enabled
-                ? 'bg-emerald-500 text-slate-950'
-                : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'
-            }`}
-            title="チャンネル自動ローテーション (R)"
-          >
-            R:ROT {config.rotation.enabled ? 'ON' : 'OFF'}
-          </button>
+      {showQr && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div className="relative flex flex-col items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 p-4 text-center shadow-2xl">
+            <button
+              type="button"
+              onClick={() => setShowQr(false)}
+              className="absolute right-2 top-2 rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <div className="text-xs font-semibold text-cyan-300">スマホ・LAN 管理画面 (QR)</div>
+            <div
+              className="overflow-hidden rounded-lg border border-slate-700 bg-white p-1"
+              dangerouslySetInnerHTML={{ __html: qrSvg }}
+            />
+            <div className="font-mono text-[11px] text-slate-300">{adminQrUrl}</div>
+          </div>
         </div>
+      )}
 
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <button
-            type="button"
-            onClick={() => {
-              const curIdx = LAYOUT_ORDER.indexOf(config.display.layoutMode);
-              const nextLayout = LAYOUT_ORDER[(curIdx + 1) % LAYOUT_ORDER.length]!;
-              void updateConfig({ display: { layoutMode: nextLayout } });
-            }}
-            className="rounded bg-slate-800 px-2 py-0.5 text-amber-300 hover:bg-slate-700"
-          >
-            L: {LAYOUT_MODE_LABELS[config.display.layoutMode].label}
-          </button>
+      {!hideHudForever && (
+        <div
+          className={`absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-2 bg-slate-950/85 px-3 py-1.5 backdrop-blur-md transition-opacity duration-300 ${
+            hudVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-1">
+            {CHANNEL_ORDER.map((ch, idx) => {
+              const keyHint = idx < 9 ? String(idx + 1) : idx === 9 ? '0' : '·';
+              const isHighlighted =
+                stats?.rotating ? stats.effectiveChannel === ch : config.activeChannel === ch;
+              return (
+                <button
+                  key={ch}
+                  type="button"
+                  onClick={() => void updateConfig({ activeChannel: ch })}
+                  className={`rounded px-2 py-0.5 text-xs font-medium transition ${
+                    isHighlighted
+                      ? 'bg-cyan-500 text-slate-950'
+                      : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'
+                  }`}
+                >
+                  {keyHint}:{CHANNEL_LABELS[ch].short}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => void updateConfig({ rotation: { enabled: !config.rotation.enabled } })}
+              className={`rounded px-2 py-0.5 text-xs font-medium ${
+                config.rotation.enabled
+                  ? 'bg-emerald-500 text-slate-950'
+                  : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'
+              }`}
+              title="チャンネル自動ローテーション (R)"
+            >
+              R:ROT {config.rotation.enabled ? 'ON' : 'OFF'}
+            </button>
+          </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              const curIdx = MODE_ORDER.indexOf(config.display.visualMode);
-              const nextMode = MODE_ORDER[(curIdx + 1) % MODE_ORDER.length]!;
-              void updateConfig({ display: { visualMode: nextMode } });
-            }}
-            className="rounded bg-slate-800 px-2 py-0.5 text-cyan-300 hover:bg-slate-700"
-          >
-            V: {VISUAL_MODE_LABELS[config.display.visualMode].label}
-          </button>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => setPaused((p) => !p)}
+              className={`inline-flex items-center gap-1 rounded px-2 py-0.5 ${
+                paused ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+              }`}
+              title="一時停止 / 再開 (Space)"
+            >
+              {paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+              {paused ? '再開' : '停止'}
+            </button>
 
-          {config.display.visualMode === 'anobar8-vfd' && (
             <button
               type="button"
               onClick={() => {
-                const curIdx = PALETTE_ORDER.indexOf(config.display.vfdPalette);
-                const nextPalette = PALETTE_ORDER[(curIdx + 1) % PALETTE_ORDER.length]!;
-                void updateConfig({ display: { vfdPalette: nextPalette } });
+                const curIdx = LAYOUT_ORDER.indexOf(config.display.layoutMode);
+                const nextLayout = LAYOUT_ORDER[(curIdx + 1) % LAYOUT_ORDER.length]!;
+                void updateConfig({ display: { layoutMode: nextLayout } });
               }}
-              className="rounded bg-slate-800 px-2 py-0.5 text-slate-200 hover:bg-slate-700"
-              style={{ color: VFD_PALETTES[config.display.vfdPalette].hex }}
+              className="rounded bg-slate-800 px-2 py-0.5 text-amber-300 hover:bg-slate-700"
             >
-              C: {config.display.vfdPalette.toUpperCase()}
+              L: {LAYOUT_MODE_LABELS[config.display.layoutMode].label}
             </button>
-          )}
 
-          {stats && (
-            <span className="hidden font-mono text-[11px] text-slate-400 md:inline">
-              {stats.logicalWidth}×{stats.logicalHeight} ({stats.fps}fps)
-            </span>
-          )}
+            <button
+              type="button"
+              onClick={() => {
+                const curIdx = MODE_ORDER.indexOf(config.display.visualMode);
+                const nextMode = MODE_ORDER[(curIdx + 1) % MODE_ORDER.length]!;
+                void updateConfig({ display: { visualMode: nextMode } });
+              }}
+              className="rounded bg-slate-800 px-2 py-0.5 text-cyan-300 hover:bg-slate-700"
+            >
+              V: {VISUAL_MODE_LABELS[config.display.visualMode].label}
+            </button>
 
-          <a
-            href="/admin"
-            className="inline-flex items-center gap-1 rounded bg-slate-800 px-2 py-0.5 text-slate-200 hover:bg-slate-700"
-          >
-            <SlidersHorizontal className="h-3 w-3" />
-            Admin
-          </a>
-          <a
-            href="/debug"
-            className="inline-flex items-center gap-1 rounded bg-slate-800 px-2 py-0.5 text-slate-200 hover:bg-slate-700"
-          >
-            <Monitor className="h-3 w-3" />
-            Debug
-          </a>
-          <button
-            type="button"
-            onClick={() => {
-              if (!document.fullscreenElement) {
-                void document.documentElement.requestFullscreen().catch(() => {});
-              } else {
-                void document.exitFullscreen().catch(() => {});
-              }
-            }}
-            className="rounded bg-slate-800 p-1 text-slate-200 hover:bg-slate-700"
-            title="Fullscreen (F)"
-          >
-            <Maximize2 className="h-3 w-3" />
-          </button>
+            {config.display.visualMode === 'anobar8-vfd' && (
+              <button
+                type="button"
+                onClick={() => {
+                  const curIdx = PALETTE_ORDER.indexOf(config.display.vfdPalette);
+                  const nextPalette = PALETTE_ORDER[(curIdx + 1) % PALETTE_ORDER.length]!;
+                  void updateConfig({ display: { vfdPalette: nextPalette } });
+                }}
+                className="rounded bg-slate-800 px-2 py-0.5 text-slate-200 hover:bg-slate-700"
+                style={{ color: VFD_PALETTES[config.display.vfdPalette].hex }}
+              >
+                C: {config.display.vfdPalette.toUpperCase()}
+              </button>
+            )}
+
+            {stats && (
+              <span className="hidden font-mono text-[11px] text-slate-400 md:inline">
+                {stats.logicalWidth}×{stats.logicalHeight} ({stats.fps}fps)
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setShowQr((q) => !q)}
+              className="inline-flex items-center gap-1 rounded bg-slate-800 px-2 py-0.5 text-slate-200 hover:bg-slate-700"
+              title="Admin QR (Q)"
+            >
+              <QrCode className="h-3 w-3" />
+              QR
+            </button>
+            <a
+              href="/admin"
+              className="inline-flex items-center gap-1 rounded bg-slate-800 px-2 py-0.5 text-slate-200 hover:bg-slate-700"
+            >
+              <SlidersHorizontal className="h-3 w-3" />
+              Admin
+            </a>
+            <a
+              href="/debug"
+              className="inline-flex items-center gap-1 rounded bg-slate-800 px-2 py-0.5 text-slate-200 hover:bg-slate-700"
+            >
+              <Monitor className="h-3 w-3" />
+              Debug
+            </a>
+            <button
+              type="button"
+              onClick={() => {
+                if (!document.fullscreenElement) {
+                  void document.documentElement.requestFullscreen().catch(() => {});
+                } else {
+                  void document.exitFullscreen().catch(() => {});
+                }
+              }}
+              className="rounded bg-slate-800 p-1 text-slate-200 hover:bg-slate-700"
+              title="Fullscreen (F)"
+            >
+              <Maximize2 className="h-3 w-3" />
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

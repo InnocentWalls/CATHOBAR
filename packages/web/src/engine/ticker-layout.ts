@@ -26,6 +26,15 @@ export interface ActiveTickerSpan {
   alpha: number;
 }
 
+export interface SplitFlapRowState {
+  lane: number;
+  item: TickerItem;
+  displayText: string;
+  elapsedSec: number;
+  holdDurationSec: number;
+  flipProgress: number; // [0..1] during mechanical cascade
+}
+
 export interface LogicalSize {
   width: number;
   height: number;
@@ -102,6 +111,7 @@ export interface StepParams {
   scrollSpeed: number;
   showBadge: boolean;
   showPixelIcons?: boolean;
+  paused?: boolean;
   measureText: MeasureTextFn;
 }
 
@@ -115,6 +125,7 @@ function getSourceWeight(source: TickerSourceId, weights?: Partial<SourceWeights
   if (!weights) return 1;
   switch (source) {
     case 'rss':
+    case 'nhk-breaking':
       return weights.rss ?? 3;
     case 'weather':
       return weights.weather ?? 2;
@@ -132,6 +143,12 @@ function getSourceWeight(source: TickerSourceId, weights?: Partial<SourceWeights
       return weights.nowplaying ?? 2;
     case 'countdown':
       return weights.countdown ?? 1;
+    case 'sysmon':
+      return weights.sysmon ?? 1;
+    case 'calendar':
+      return weights.calendar ?? 2;
+    case 'sensors':
+      return weights.sensors ?? 2;
     case 'webhook':
       return weights.webhook ?? 2;
     case 'push':
@@ -143,6 +160,7 @@ function getSourceWeight(source: TickerSourceId, weights?: Partial<SourceWeights
 
 export class TickerLayoutEngine {
   private spans: ActiveTickerSpan[] = [];
+  private splitFlapRows: SplitFlapRowState[] = [];
   private priorityQueue: TickerItem[] = [];
   private pool: TickerItem[] = [];
   private poolCursor = 0;
@@ -153,6 +171,7 @@ export class TickerLayoutEngine {
   private uidCounter = 0;
   private danmakuSlotCursor = 0;
   private shinkansenState: ShinkansenState | null = null;
+  private lastTickerWidth = 320;
 
   setPool(
     items: TickerItem[],
@@ -173,6 +192,9 @@ export class TickerLayoutEngine {
       isItemVisible(item, activeChannel, sources),
     );
     this.spans = this.spans.filter((span) => isItemVisible(span.item, activeChannel, sources));
+    this.splitFlapRows = this.splitFlapRows.filter((row) =>
+      isItemVisible(row.item, activeChannel, sources),
+    );
     if (
       this.shinkansenState &&
       !isItemVisible(this.shinkansenState.span.item, activeChannel, sources)
@@ -204,8 +226,27 @@ export class TickerLayoutEngine {
 
   clearActive(): void {
     this.spans = [];
+    this.splitFlapRows = [];
     this.priorityQueue = [];
     this.shinkansenState = null;
+  }
+
+  getSplitFlapRows(): SplitFlapRowState[] {
+    return this.splitFlapRows;
+  }
+
+  /**
+   * Shifts active spans horizontally by deltaPx (for manual scrub while paused).
+   */
+  nudgeScroll(deltaPx: number): void {
+    const fadeMargin = Math.max(12, Math.round(this.lastTickerWidth * 0.04));
+    for (const span of this.spans) {
+      span.x += deltaPx;
+      span.alpha = computeEdgeAlpha(span.x, span.width, this.lastTickerWidth, fadeMargin);
+    }
+    if (this.shinkansenState) {
+      this.shinkansenState.span.x += deltaPx;
+    }
   }
 
   step(params: StepParams): ActiveTickerSpan[] {
@@ -222,11 +263,22 @@ export class TickerLayoutEngine {
       scrollSpeed,
       showBadge,
       showPixelIcons = false,
+      paused = false,
       measureText,
     } = params;
 
     this.activeChannel = activeChannel;
-    const clampedDt = Math.min(0.1, Math.max(0, dtSec));
+    this.lastTickerWidth = tickerWidth;
+    const clampedDt = paused ? 0 : Math.min(0.1, Math.max(0, dtSec));
+
+    if (visualMode === 'split-flap') {
+      this.spans = [];
+      this.shinkansenState = null;
+      this.stepSplitFlap(clampedDt, Math.max(1, Math.min(3, lanes)));
+      return [];
+    }
+
+    this.splitFlapRows = [];
 
     if (visualMode === 'shinkansen-led') {
       if (shinkansenStyle === 'pause-head') {
@@ -249,15 +301,45 @@ export class TickerLayoutEngine {
         span.alpha = computeEdgeAlpha(span.x, span.width, tickerWidth, fadeMargin);
       }
       this.spans = this.spans.filter((s) => s.x + s.width > -4);
-      this.stepLanesWithFont(
-        tickerWidth,
-        1,
-        ledFontSize,
-        showBadge,
-        showPixelIcons,
-        fadeMargin,
-        measureText,
-      );
+      if (!paused) {
+        this.stepLanesWithFont(
+          tickerWidth,
+          1,
+          ledFontSize,
+          showBadge,
+          showPixelIcons,
+          fadeMargin,
+          measureText,
+        );
+      }
+      return this.spans;
+    }
+
+    if (visualMode === 'station-board') {
+      this.shinkansenState = null;
+      const safeLanes = Math.max(1, Math.min(3, lanes));
+      const laneHeight = tickerHeight / safeLanes;
+      const fontSize = Math.max(10, Math.min(laneHeight * 0.64, logicalHeight * 0.44));
+      const badgeColWidth = Math.max(46, Math.min(84, Math.round(tickerWidth * 0.22)));
+      const textAreaWidth = Math.max(40, tickerWidth - badgeColWidth);
+      const fadeMargin = Math.max(8, Math.round(textAreaWidth * 0.03));
+
+      for (const span of this.spans) {
+        span.x -= scrollSpeed * span.speedScale * clampedDt;
+        span.alpha = computeEdgeAlpha(span.x, span.width, textAreaWidth, fadeMargin);
+      }
+      this.spans = this.spans.filter((s) => s.x + s.width > -6);
+      if (!paused) {
+        this.stepLanesWithFont(
+          textAreaWidth,
+          safeLanes,
+          fontSize,
+          false, // badge drawn in fixed left column
+          showPixelIcons,
+          fadeMargin,
+          measureText,
+        );
+      }
       return this.spans;
     }
 
@@ -278,32 +360,74 @@ export class TickerLayoutEngine {
 
     this.spans = this.spans.filter((s) => s.x + s.width > -6);
 
-    if (effectiveMode === 'danmaku') {
-      this.stepDanmaku(
-        tickerWidth,
-        tickerHeight,
-        logicalHeight,
-        showBadge,
-        showPixelIcons,
-        fadeMargin,
-        measureText,
-      );
-    } else {
-      const safeLanes = Math.max(1, lanes);
-      const laneHeight = tickerHeight / safeLanes;
-      const fontSize = Math.max(10, Math.min(laneHeight * 0.68, logicalHeight * 0.48));
-      this.stepLanesWithFont(
-        tickerWidth,
-        safeLanes,
-        fontSize,
-        showBadge,
-        showPixelIcons,
-        fadeMargin,
-        measureText,
-      );
+    if (!paused) {
+      if (effectiveMode === 'danmaku') {
+        this.stepDanmaku(
+          tickerWidth,
+          tickerHeight,
+          logicalHeight,
+          showBadge,
+          showPixelIcons,
+          fadeMargin,
+          measureText,
+        );
+      } else {
+        const safeLanes = Math.max(1, lanes);
+        const laneHeight = tickerHeight / safeLanes;
+        const fontSize = Math.max(10, Math.min(laneHeight * 0.68, logicalHeight * 0.48));
+        this.stepLanesWithFont(
+          tickerWidth,
+          safeLanes,
+          fontSize,
+          showBadge,
+          showPixelIcons,
+          fadeMargin,
+          measureText,
+        );
+      }
     }
 
     return this.spans;
+  }
+
+  private stepSplitFlap(dtSec: number, rowCount: number): void {
+    const holdDurationSec = 6.0;
+    const flipAnimSec = 0.75;
+
+    while (this.splitFlapRows.length < rowCount) {
+      const next = this.pickNextItem();
+      if (!next) break;
+      this.splitFlapRows.push({
+        lane: this.splitFlapRows.length,
+        item: next,
+        displayText: next.text,
+        elapsedSec: 0,
+        holdDurationSec,
+        flipProgress: 0,
+      });
+    }
+    if (this.splitFlapRows.length > rowCount) {
+      this.splitFlapRows.length = rowCount;
+    }
+
+    for (let i = 0; i < this.splitFlapRows.length; i += 1) {
+      const row = this.splitFlapRows[i]!;
+      row.lane = i;
+      row.elapsedSec += dtSec;
+      row.flipProgress = Math.min(1, row.elapsedSec / flipAnimSec);
+
+      if (row.elapsedSec >= row.holdDurationSec) {
+        const next = this.pickNextItem();
+        if (next) {
+          row.item = next;
+          row.displayText = next.text;
+          row.elapsedSec = 0;
+          row.flipProgress = 0;
+        } else {
+          row.elapsedSec = 0;
+        }
+      }
+    }
   }
 
   private stepShinkansenPauseHead(

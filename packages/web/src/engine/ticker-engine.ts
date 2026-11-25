@@ -1,12 +1,14 @@
 import {
+  evaluateNightMode,
   isItemEnabledBySources,
   type ActivityBucket,
   type AppConfig,
   type ChannelId,
   type NowPlayingState,
+  type SensorReading,
   type TickerItem,
 } from '@cathobar/shared';
-import { playBreakingAlertChime } from './alert-audio.js';
+import { playBreakingAlertChime, resolveAlertSoundKind } from './alert-audio.js';
 import { Renderer2D, type ActiveBreakingAlert } from './renderer-2d.js';
 import { RendererGL } from './renderer-gl.js';
 import { SpectrumAnalyzer } from './spectrum-analyzer.js';
@@ -24,6 +26,8 @@ export interface EngineStats {
   viewportHeight: number;
   effectiveChannel: ChannelId;
   rotating: boolean;
+  nightActive: boolean;
+  paused: boolean;
   backend: 'webgl2' | 'canvas2d';
 }
 
@@ -38,6 +42,7 @@ export class TickerEngine {
   private activity: ActivityBucket[] = [];
   private latestWeathers: TickerItem[] = [];
   private nowPlaying: NowPlayingState | null = null;
+  private sensors: SensorReading[] = [];
   private breakingQueue: TickerItem[] = [];
   private activeBreaking: ActiveBreakingAlert | null = null;
   private lastEffectiveChannel: ChannelId;
@@ -48,6 +53,8 @@ export class TickerEngine {
   private currentFps = 60;
   private viewportWidth = 640;
   private viewportHeight = 96;
+  private transparent = false;
+  private paused = false;
   private onStats?: (stats: EngineStats) => void;
 
   constructor(
@@ -72,11 +79,24 @@ export class TickerEngine {
     this.viewportHeight = Math.max(1, Math.round(height * dpr));
   }
 
+  setTransparent(transparent: boolean): void {
+    this.transparent = transparent;
+  }
+
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+  }
+
+  nudgeScroll(deltaPx: number): void {
+    this.layout.nudgeScroll(deltaPx);
+  }
+
   syncState(
     items: TickerItem[],
     activity: ActivityBucket[],
     config: AppConfig,
     nowPlaying: NowPlayingState | null = this.nowPlaying,
+    sensors: SensorReading[] = this.sensors,
   ): void {
     const prevRotChannel = this.lastEffectiveChannel;
     const nextRot = computeEffectiveChannel(config, Date.now()).channel;
@@ -87,6 +107,7 @@ export class TickerEngine {
     this.allItems = items;
     this.activity = activity;
     this.nowPlaying = nowPlaying;
+    this.sensors = sensors;
     this.lastEffectiveChannel = nextRot;
 
     this.spectrumAnalyzer.setInputMode(
@@ -135,6 +156,10 @@ export class TickerEngine {
     this.nowPlaying = nowPlaying;
   }
 
+  updateSensors(sensors: SensorReading[]): void {
+    this.sensors = sensors;
+  }
+
   start(): void {
     if (this.rafId !== null) return;
     this.lastFrameMs = performance.now();
@@ -160,9 +185,19 @@ export class TickerEngine {
     this.lastFrameMs = nowMs;
     const clampedDt = Math.min(0.1, Math.max(0, dtSec));
 
-    const { display, sources, filtering } = this.config;
-    const rotState = computeEffectiveChannel(this.config, Date.now());
-    const activeChannel = rotState.channel;
+    const nowDate = new Date();
+    const night = evaluateNightMode(this.config.nightMode, nowDate);
+    const display = night.active
+      ? {
+          ...this.config.display,
+          brightness: night.brightnessOverride ?? this.config.display.brightness,
+          vfdPalette: night.paletteOverride ?? this.config.display.vfdPalette,
+        }
+      : this.config.display;
+
+    const { sources, filtering } = this.config;
+    const rotState = computeEffectiveChannel(this.config, nowDate.getTime());
+    const activeChannel: ChannelId = night.clockOnly ? 'clock' : rotState.channel;
 
     if (activeChannel !== this.lastEffectiveChannel) {
       this.lastEffectiveChannel = activeChannel;
@@ -179,7 +214,7 @@ export class TickerEngine {
         durationSec: display.breakingAlertDurationSec,
       };
       if (display.breakingAlertSound) {
-        playBreakingAlertChime();
+        playBreakingAlertChime(resolveAlertSoundKind(nextAlert), display.breakingAlertVolume);
       }
     } else if (this.activeBreaking) {
       this.activeBreaking.elapsedSec += clampedDt;
@@ -198,20 +233,21 @@ export class TickerEngine {
     );
 
     const renderScale =
-      display.visualMode === 'clean'
+      display.visualMode === 'clean' || display.visualMode === 'split-flap'
         ? Math.max(1, Math.min(4, this.viewportHeight / logical.height))
         : 1;
 
     this.renderer2d.configure(logical.width, logical.height, renderScale, display.visualMode);
 
-    const spectrumSnapshot = display.showSpectrumAnalyzer
-      ? this.spectrumAnalyzer.step(
-          clampedDt,
-          display.spectrumAudioInput,
-          this.nowPlaying,
-          activeChannel === 'nowplaying',
-        )
-      : null;
+    const spectrumSnapshot =
+      display.showSpectrumAnalyzer && !(night.blackout && !this.activeBreaking)
+        ? this.spectrumAnalyzer.step(
+            clampedDt,
+            display.spectrumAudioInput,
+            this.nowPlaying,
+            activeChannel === 'nowplaying',
+          )
+        : null;
 
     const graphHeight = display.showActivityGraph
       ? logical.height <= 40
@@ -232,39 +268,45 @@ export class TickerEngine {
         ? display.scrollSpeed * (logical.height / 72)
         : display.scrollSpeed;
 
-    const spans = this.activeBreaking
-      ? []
-      : this.layout.step({
-          dtSec: clampedDt,
-          tickerWidth,
-          tickerHeight,
-          logicalHeight: logical.height,
-          lanes: display.lanes,
-          layoutMode: display.layoutMode,
-          visualMode: display.visualMode,
-          shinkansenStyle: display.shinkansenStyle,
-          activeChannel,
-          scrollSpeed: effectiveSpeed,
-          showBadge: display.showSourceBadge,
-          showPixelIcons: display.showPixelIcons,
-          measureText: this.renderer2d.measureText,
-        });
+    const spans =
+      this.activeBreaking || (night.blackout && !this.activeBreaking)
+        ? []
+        : this.layout.step({
+            dtSec: clampedDt,
+            tickerWidth,
+            tickerHeight,
+            logicalHeight: logical.height,
+            lanes: display.lanes,
+            layoutMode: display.layoutMode,
+            visualMode: display.visualMode,
+            shinkansenStyle: display.shinkansenStyle,
+            activeChannel,
+            scrollSpeed: effectiveSpeed,
+            showBadge: display.showSourceBadge,
+            showPixelIcons: display.showPixelIcons,
+            paused: this.paused,
+            measureText: this.renderer2d.measureText,
+          });
 
     this.renderer2d.render({
       display,
       activeChannel,
-      isRotating: rotState.rotating,
+      isRotating: rotState.rotating && !night.clockOnly,
       rotationProgress: rotState.progress,
       spans,
+      splitFlapRows: this.layout.getSplitFlapRows(),
       activity: this.activity,
       latestWeathers: this.latestWeathers,
       nowPlaying: this.nowPlaying,
+      sensors: this.sensors,
       spectrum: spectrumSnapshot,
       breakingAlert: this.activeBreaking,
-      now: new Date(),
+      now: nowDate,
+      transparent: this.transparent,
+      blackout: night.blackout,
+      paused: this.paused,
     });
 
-    // Subtle slow Lissajous pixel shift for VFD / OLED burn-in prevention
     const shiftX = display.burnInShift ? Math.sin(nowMs * 0.00017) * 0.85 : 0;
     const shiftY = display.burnInShift ? Math.cos(nowMs * 0.00013) * 0.65 : 0;
 
@@ -278,6 +320,8 @@ export class TickerEngine {
         display,
         shiftX,
         shiftY,
+        clampedDt,
+        this.transparent,
       );
     } else if (this.fallbackCtx) {
       if (
@@ -287,7 +331,11 @@ export class TickerEngine {
         this.canvas.width = this.viewportWidth;
         this.canvas.height = this.viewportHeight;
       }
-      this.fallbackCtx.imageSmoothingEnabled = display.visualMode === 'clean';
+      if (this.transparent) {
+        this.fallbackCtx.clearRect(0, 0, this.viewportWidth, this.viewportHeight);
+      }
+      this.fallbackCtx.imageSmoothingEnabled =
+        display.visualMode === 'clean' || display.visualMode === 'split-flap';
       this.fallbackCtx.drawImage(
         this.renderer2d.canvas,
         0,
@@ -309,7 +357,9 @@ export class TickerEngine {
         viewportWidth: this.viewportWidth,
         viewportHeight: this.viewportHeight,
         effectiveChannel: activeChannel,
-        rotating: rotState.rotating,
+        rotating: rotState.rotating && !night.clockOnly,
+        nightActive: night.active,
+        paused: this.paused,
         backend: this.rendererGl ? 'webgl2' : 'canvas2d',
       });
     }

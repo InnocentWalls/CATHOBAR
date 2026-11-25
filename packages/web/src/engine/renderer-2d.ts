@@ -4,17 +4,19 @@ import {
   type ChannelId,
   type DisplaySettings,
   type NowPlayingState,
+  type SensorReading,
   type TickerItem,
   type VisualMode,
 } from '@cathobar/shared';
 import { drawPixelIcon, resolveItemIcon } from './pixel-icons.js';
 import type { SpectrumSnapshot } from './spectrum-analyzer.js';
-import type { ActiveTickerSpan } from './ticker-layout.js';
+import type { ActiveTickerSpan, SplitFlapRowState } from './ticker-layout.js';
 
 const FONT_FAMILY =
   '"Noto Sans JP", "BIZ UDGothic", "Yu Gothic UI", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif';
 const LED_FONT_FAMILY =
   '"DotGothic16", "BIZ UDGothic", "Noto Sans JP", monospace';
+const FLAP_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789アイウエオカキクケコサシスセソタチツテトナニヌネノ';
 
 export interface ActiveBreakingAlert {
   item: TickerItem;
@@ -54,7 +56,10 @@ export class Renderer2D {
     this.width = logicalWidth;
     this.height = logicalHeight;
     this.scale = renderScale;
-    this.activeFontFamily = visualMode === 'shinkansen-led' ? LED_FONT_FAMILY : FONT_FAMILY;
+    this.activeFontFamily =
+      visualMode === 'shinkansen-led' || visualMode === 'station-board'
+        ? LED_FONT_FAMILY
+        : FONT_FAMILY;
   }
 
   measureText = (text: string, fontSizePx: number, weight = 500): number => {
@@ -114,12 +119,17 @@ export class Renderer2D {
     isRotating: boolean;
     rotationProgress: number;
     spans: ActiveTickerSpan[];
+    splitFlapRows?: SplitFlapRowState[];
     activity: ActivityBucket[];
     latestWeathers: TickerItem[];
     nowPlaying: NowPlayingState | null;
+    sensors?: SensorReading[];
     spectrum: SpectrumSnapshot | null;
     breakingAlert: ActiveBreakingAlert | null;
     now: Date;
+    transparent?: boolean;
+    blackout?: boolean;
+    paused?: boolean;
   }): void {
     const {
       display,
@@ -127,19 +137,33 @@ export class Renderer2D {
       isRotating,
       rotationProgress,
       spans,
+      splitFlapRows = [],
       activity,
       latestWeathers,
       nowPlaying,
+      sensors = [],
       spectrum,
       breakingAlert,
       now,
+      transparent = false,
+      blackout = false,
+      paused = false,
     } = params;
     const ctx = this.ctx;
     ctx.save();
     ctx.scale(this.scale, this.scale);
 
-    ctx.fillStyle = display.visualMode === 'clean' ? '#070b12' : '#000000';
-    ctx.fillRect(0, 0, this.width, this.height);
+    if (transparent) {
+      ctx.clearRect(0, 0, this.width, this.height);
+    } else {
+      ctx.fillStyle = display.visualMode === 'clean' ? '#070b12' : '#000000';
+      ctx.fillRect(0, 0, this.width, this.height);
+    }
+
+    if (blackout && !breakingAlert) {
+      ctx.restore();
+      return;
+    }
 
     if (breakingAlert) {
       this.drawBreakingAlert(ctx, display, breakingAlert);
@@ -164,9 +188,16 @@ export class Renderer2D {
     const tickerWidth = Math.max(40, this.width - overlayWidth);
 
     if (activeChannel === 'clock') {
-      this.drawClockChannel(ctx, display, tickerHeight, latestWeathers, nowPlaying, now);
+      this.drawClockChannel(ctx, display, tickerHeight, latestWeathers, nowPlaying, sensors, now);
     } else {
-      this.drawTickerSpans(ctx, display, tickerWidth, tickerHeight, spans);
+      if (display.visualMode === 'split-flap') {
+        this.drawSplitFlap(ctx, display, tickerWidth, tickerHeight, splitFlapRows);
+      } else if (display.visualMode === 'station-board') {
+        this.drawStationBoard(ctx, display, tickerWidth, tickerHeight, spans);
+      } else {
+        this.drawTickerSpans(ctx, display, tickerWidth, tickerHeight, spans);
+      }
+
       if (specW > 0 && spectrum) {
         this.drawSpectrumAnalyzer(
           ctx,
@@ -187,6 +218,7 @@ export class Renderer2D {
           tickerHeight,
           clockW,
           now,
+          paused,
         );
       }
     }
@@ -220,7 +252,6 @@ export class Renderer2D {
     ctx.fillStyle = bgTint;
     ctx.fillRect(0, 0, this.width, this.height);
 
-    // Top & bottom hazard bars
     const barH = Math.max(2, Math.round(this.height * 0.08));
     ctx.fillStyle = borderColor;
     ctx.fillRect(0, 0, this.width, barH);
@@ -273,6 +304,198 @@ export class Renderer2D {
     ctx.font = `700 ${textSize}px ${fontFam}`;
     ctx.fillStyle = isShinkansen ? '#ff9614' : '#ffffff';
     ctx.fillText(item.text, cursorX, cy);
+  }
+
+  private drawSplitFlap(
+    ctx: CanvasRenderingContext2D,
+    display: DisplaySettings,
+    tickerWidth: number,
+    tickerHeight: number,
+    rows: SplitFlapRowState[],
+  ): void {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, tickerWidth, tickerHeight);
+    ctx.clip();
+
+    const rowCount = Math.max(1, rows.length || Math.min(3, display.lanes));
+    const rowH = tickerHeight / rowCount;
+    const cellH = Math.max(12, Math.floor(rowH * 0.78));
+    const cellW = Math.max(9, Math.round(cellH * 0.68));
+    const gapX = Math.max(1, Math.round(cellW * 0.14));
+    const fontSize = Math.max(9, Math.round(cellH * 0.72));
+    const badgeW = display.showSourceBadge ? Math.max(38, Math.min(68, Math.round(tickerWidth * 0.16))) : 0;
+
+    for (let r = 0; r < rowCount; r += 1) {
+      const row = rows[r];
+      const topY = r * rowH;
+      const cy = topY + rowH * 0.5;
+      const cellTop = Math.round(cy - cellH * 0.5);
+
+      // Subtle mechanical track background
+      ctx.fillStyle = '#0e1116';
+      ctx.fillRect(0, topY + 1, tickerWidth, rowH - 2);
+
+      if (!row) continue;
+
+      if (display.showSourceBadge) {
+        ctx.fillStyle = '#181c24';
+        ctx.fillRect(3, cellTop, badgeW - 6, cellH);
+        ctx.fillStyle = row.item.color;
+        ctx.fillRect(3, cellTop, 3, cellH);
+        ctx.font = `700 ${Math.max(8, Math.round(fontSize * 0.65))}px ${FONT_FAMILY}`;
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#f1f5f9';
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(7, cellTop, badgeW - 11, cellH);
+        ctx.clip();
+        ctx.fillText(row.item.badge, 8, cy);
+        ctx.restore();
+      }
+
+      const startX = badgeW + 4;
+      const usableW = Math.max(10, tickerWidth - startX - 4);
+      const maxChars = Math.max(1, Math.floor(usableW / (cellW + gapX)));
+      const chars = Array.from(row.displayText);
+
+      // Slowly pan if message exceeds mechanical board columns
+      const holdT = Math.max(0, row.elapsedSec - 1.5);
+      const overflow = Math.max(0, chars.length - maxChars);
+      const scrollStep =
+        overflow > 0
+          ? Math.min(overflow, Math.floor((holdT / Math.max(1.5, row.holdDurationSec - 2.0)) * (overflow + 1)))
+          : 0;
+
+      ctx.font = `700 ${fontSize}px "JetBrains Mono", ${FONT_FAMILY}`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+
+      for (let i = 0; i < maxChars; i += 1) {
+        const cx = startX + i * (cellW + gapX);
+        const targetChar = chars[i + scrollStep] ?? ' ';
+        const charDelay = (i / Math.max(1, maxChars)) * 0.55;
+        const localProgress = Math.max(0, Math.min(1, (row.flipProgress - charDelay) / 0.45));
+        const isFlipping = localProgress < 1 && targetChar !== ' ';
+
+        const shownChar = isFlipping
+          ? FLAP_CHARSET[Math.floor(localProgress * 7 + i) % FLAP_CHARSET.length]!
+          : targetChar;
+
+        // Upper & lower flap plates
+        ctx.fillStyle = '#171b22';
+        ctx.fillRect(cx, cellTop, cellW, cellH);
+        ctx.fillStyle = '#262d38';
+        ctx.fillRect(cx, cellTop, cellW, 1);
+
+        if (shownChar !== ' ') {
+          ctx.save();
+          if (isFlipping) {
+            const scaleY = Math.max(0.25, Math.abs(Math.cos(localProgress * Math.PI * 2)));
+            ctx.translate(cx + cellW * 0.5, cy);
+            ctx.scale(1, scaleY);
+            ctx.fillStyle = '#fef08a';
+            ctx.fillText(shownChar, 0, 0);
+          } else {
+            ctx.fillStyle = row.item.priority === 'high' ? '#fbbf24' : '#f8fafc';
+            ctx.fillText(shownChar, cx + cellW * 0.5, cy);
+          }
+          ctx.restore();
+        }
+
+        // Center split hinge line
+        ctx.fillStyle = 'rgba(0,0,0,0.75)';
+        ctx.fillRect(cx, Math.floor(cy), cellW, 1);
+      }
+      ctx.textAlign = 'left';
+    }
+
+    ctx.restore();
+  }
+
+  private drawStationBoard(
+    ctx: CanvasRenderingContext2D,
+    display: DisplaySettings,
+    tickerWidth: number,
+    tickerHeight: number,
+    spans: ActiveTickerSpan[],
+  ): void {
+    const safeLanes = Math.max(1, Math.min(3, display.lanes));
+    const laneHeight = tickerHeight / safeLanes;
+    const badgeColWidth = Math.max(46, Math.min(84, Math.round(tickerWidth * 0.22)));
+    const textAreaWidth = Math.max(40, tickerWidth - badgeColWidth);
+
+    // Draw horizontal lane dividers & pick leading span per lane for fixed left column
+    for (let lane = 0; lane < safeLanes; lane += 1) {
+      const topY = lane * laneHeight;
+      if (lane > 0) {
+        ctx.fillStyle = 'rgba(148,163,184,0.22)';
+        ctx.fillRect(0, Math.floor(topY), tickerWidth, 1);
+      }
+
+      const laneSpans = spans.filter((s) => s.lane === lane);
+      const lead = laneSpans[0];
+      if (lead) {
+        const cy = topY + laneHeight * 0.52;
+        const padY = Math.max(2, Math.round(laneHeight * 0.14));
+        const boxH = Math.max(10, laneHeight - padY * 2);
+        const boxY = Math.round(topY + padY);
+        const isHigh = lead.item.priority === 'high';
+
+        ctx.fillStyle = isHigh ? '#dc2626' : lead.item.color || '#16a34a';
+        ctx.fillRect(3, boxY, badgeColWidth - 7, boxH);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(5, boxY, badgeColWidth - 11, boxH);
+        ctx.clip();
+        const badgeFont = Math.max(8, Math.round(boxH * 0.56));
+        ctx.font = `700 ${badgeFont}px ${LED_FONT_FAMILY}`;
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#090d12';
+        ctx.fillText(lead.item.badge, 6, cy);
+        ctx.restore();
+      }
+    }
+
+    // Vertical divider between badge column and scrolling text
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.fillRect(badgeColWidth - 1, 0, 1, tickerHeight);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(badgeColWidth, 0, textAreaWidth, tickerHeight);
+    ctx.clip();
+    ctx.textBaseline = 'middle';
+
+    for (const span of spans) {
+      const centerY = span.yRatio * tickerHeight;
+      ctx.save();
+      ctx.globalAlpha = span.alpha;
+      let cursorX = badgeColWidth + span.x;
+
+      if (display.showPixelIcons && span.iconWidth > 0) {
+        const iconSize = Math.max(10, Math.round(span.fontSize * 0.92));
+        drawPixelIcon(
+          ctx,
+          resolveItemIcon(span.item),
+          cursorX,
+          centerY,
+          iconSize,
+          display.visualMode,
+          span.item.color,
+          span.item.priority === 'high',
+        );
+        cursorX += span.iconWidth;
+      }
+
+      ctx.font = `500 ${span.fontSize}px ${LED_FONT_FAMILY}`;
+      ctx.fillStyle = span.item.priority === 'high' ? '#ff9614' : '#f8fafc';
+      ctx.fillText(span.item.text, cursorX, centerY);
+      ctx.restore();
+    }
+
+    ctx.restore();
   }
 
   private drawTickerSpans(
@@ -412,6 +635,7 @@ export class Renderer2D {
     tickerHeight: number,
     overlayWidth: number,
     now: Date,
+    paused = false,
   ): void {
     const isShinkansen = display.visualMode === 'shinkansen-led';
     const boxX = this.width - overlayWidth;
@@ -443,11 +667,11 @@ export class Renderer2D {
     ctx.fillText(timeStr, boxX + 7, 2);
 
     ctx.font = `600 ${tagFontSize}px "JetBrains Mono", "Consolas", monospace`;
-    ctx.fillStyle = isShinkansen ? '#18ff4d' : '#9ca3af';
-    const tagLabel = isRotating ? `ROT:${chTag}` : `CH:${chTag}`;
+    ctx.fillStyle = paused ? '#f59e0b' : isShinkansen ? '#18ff4d' : '#9ca3af';
+    const tagLabel = paused ? 'PAUSED' : isRotating ? `ROT:${chTag}` : `CH:${chTag}`;
     ctx.fillText(tagLabel, boxX + 7, clockFontSize + 4);
 
-    if (isRotating) {
+    if (isRotating && !paused) {
       const barW = Math.max(10, overlayWidth - 14);
       const barY = Math.min(tickerHeight - 4, clockFontSize + tagFontSize + 7);
       ctx.fillStyle = 'rgba(255,255,255,0.15)';
@@ -463,6 +687,7 @@ export class Renderer2D {
     tickerHeight: number,
     latestWeathers: TickerItem[],
     nowPlaying: NowPlayingState | null,
+    sensors: SensorReading[],
     now: Date,
   ): void {
     const isShinkansen = display.visualMode === 'shinkansen-led';
@@ -470,6 +695,98 @@ export class Renderer2D {
     const timeStr = formatTime(now);
     const dateStr = formatDate(now);
 
+    const activeWeather =
+      latestWeathers.length > 0
+        ? latestWeathers[Math.floor(now.getTime() / 8000) % latestWeathers.length]
+        : undefined;
+
+    const sensorSummary =
+      sensors.length > 0
+        ? sensors
+            .slice(0, 2)
+            .map((s) => {
+              const segs: string[] = [];
+              if (typeof s.temperature === 'number') segs.push(`${s.temperature.toFixed(1)}℃`);
+              if (typeof s.humidity === 'number') segs.push(`${Math.round(s.humidity)}%`);
+              if (typeof s.co2 === 'number') segs.push(`CO2:${Math.round(s.co2)}`);
+              return `[${s.name}] ${segs.join(' ')}`;
+            })
+            .join('  ')
+        : '';
+
+    const npSummary =
+      nowPlaying?.playing && nowPlaying.title
+        ? `♪ ${nowPlaying.title}${nowPlaying.artist ? ` - ${nowPlaying.artist}` : ''}`
+        : '';
+
+    if (tickerHeight >= 60) {
+      // Two-row rich clock layout
+      const timeSize = Math.max(16, Math.round(tickerHeight * 0.38));
+      const infoSize = Math.max(9, Math.round(tickerHeight * 0.21));
+      const row1Y = tickerHeight * 0.34;
+      const row2Y = tickerHeight * 0.74;
+
+      ctx.textBaseline = 'middle';
+      ctx.font = `700 ${timeSize}px "JetBrains Mono", "Consolas", monospace`;
+      const timeW = ctx.measureText(timeStr).width;
+
+      ctx.font = `600 ${infoSize}px ${fontFam}`;
+      const dateW = ctx.measureText(dateStr).width;
+
+      const weatherStr = activeWeather ? `${activeWeather.badge} ${activeWeather.text}` : '';
+      const row1Right = weatherStr ? `${dateStr}   ${weatherStr}` : dateStr;
+      const row1RightW = ctx.measureText(row1Right).width;
+      const row1TotalW = timeW + 14 + row1RightW;
+
+      const startX = Math.max(8, (this.width - Math.min(this.width - 16, row1TotalW)) * 0.5);
+      ctx.font = `700 ${timeSize}px "JetBrains Mono", "Consolas", monospace`;
+      ctx.fillStyle = isShinkansen ? '#ff9614' : '#ffffff';
+      ctx.fillText(timeStr, startX, row1Y);
+
+      const infoX = startX + timeW + 14;
+      const availInfoW = Math.max(40, this.width - infoX - 8);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(infoX, 0, availInfoW, tickerHeight * 0.56);
+      ctx.clip();
+      ctx.font = `500 ${infoSize}px ${fontFam}`;
+      ctx.fillStyle = isShinkansen ? '#18ff4d' : '#cbd5e1';
+      if (row1RightW <= availInfoW) {
+        ctx.fillText(row1Right, infoX, row1Y);
+      } else {
+        const overflow = row1RightW - availInfoW + 16;
+        const shift = ((now.getTime() / 40) % (overflow + 40)) - 20;
+        const clampedShift = Math.max(0, Math.min(overflow, shift));
+        ctx.fillText(row1Right, infoX - clampedShift, row1Y);
+      }
+      ctx.restore();
+
+      // Row 2: weather icon / nowPlaying / indoor sensors
+      const row2Parts = [npSummary, sensorSummary].filter(Boolean);
+      const row2Text = row2Parts.join('   |   ') || (dateW > 0 && activeWeather ? '' : 'STANDBY');
+      if (row2Text) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(8, tickerHeight * 0.54, this.width - 16, tickerHeight * 0.44);
+        ctx.clip();
+        ctx.font = `500 ${infoSize}px ${fontFam}`;
+        const r2W = ctx.measureText(row2Text).width;
+        const maxR2W = this.width - 16;
+        ctx.fillStyle = npSummary ? '#f472b6' : isShinkansen ? '#ff9614' : '#94a3b8';
+        if (r2W <= maxR2W) {
+          ctx.fillText(row2Text, Math.max(8, (this.width - r2W) * 0.5), row2Y);
+        } else {
+          const overflow = r2W - maxR2W + 20;
+          const shift = ((now.getTime() / 35) % (overflow + 40)) - 20;
+          const clamped = Math.max(0, Math.min(overflow, shift));
+          ctx.fillText(row2Text, 8 - clamped, row2Y);
+        }
+        ctx.restore();
+      }
+      return;
+    }
+
+    // Compact single-row clock for low-height LED bars
     const timeSize = Math.max(11, Math.round(tickerHeight * 0.58));
     const dateSize = Math.max(8, Math.round(tickerHeight * 0.34));
 
@@ -478,28 +795,36 @@ export class Renderer2D {
     const timeW = ctx.measureText(timeStr).width;
 
     ctx.font = `500 ${dateSize}px ${fontFam}`;
-    const weatherSummary = latestWeathers
-      .map((w) => `[${w.badge}] ${w.text}`)
-      .join('  /  ');
-    const npSummary =
-      nowPlaying?.playing && nowPlaying.title
-        ? `♪ ${nowPlaying.title}${nowPlaying.artist ? ` - ${nowPlaying.artist}` : ''}`
-        : '';
-    const extraParts = [dateStr, weatherSummary, npSummary].filter(Boolean);
+    const weatherSummary = activeWeather ? `[${activeWeather.badge}] ${activeWeather.text}` : '';
+    const extraParts = [dateStr, weatherSummary, npSummary, sensorSummary].filter(Boolean);
     const subText = extraParts.join('  |  ');
     const subW = ctx.measureText(subText).width;
 
     const totalW = timeW + 12 + subW;
-    const startX = Math.max(6, (this.width - totalW) * 0.5);
+    const startX = Math.max(6, (this.width - Math.min(this.width - 12, totalW)) * 0.5);
     const cy = tickerHeight * 0.52;
 
     ctx.font = `700 ${timeSize}px "JetBrains Mono", "Consolas", monospace`;
     ctx.fillStyle = isShinkansen ? '#ff9614' : '#ffffff';
     ctx.fillText(timeStr, startX, cy);
 
+    const subX = startX + timeW + 12;
+    const availW = Math.max(30, this.width - subX - 6);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(subX, 0, availW, tickerHeight);
+    ctx.clip();
     ctx.font = `500 ${dateSize}px ${fontFam}`;
     ctx.fillStyle = isShinkansen ? '#18ff4d' : '#bdbdbd';
-    ctx.fillText(subText, startX + timeW + 12, cy);
+    if (subW <= availW) {
+      ctx.fillText(subText, subX, cy);
+    } else {
+      const overflow = subW - availW + 16;
+      const shift = ((now.getTime() / 35) % (overflow + 40)) - 20;
+      const clamped = Math.max(0, Math.min(overflow, shift));
+      ctx.fillText(subText, subX - clamped, cy);
+    }
+    ctx.restore();
   }
 
   private drawActivityGraph(

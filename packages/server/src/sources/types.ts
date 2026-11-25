@@ -1,6 +1,7 @@
 import type {
   AppConfig,
   NowPlayingState,
+  SensorReading,
   SourceStatus,
   TickerItem,
   TickerSourceId,
@@ -12,6 +13,7 @@ export interface SourceContext {
   retainSourceKeyItems: (sourceKey: string, keepIds: Set<string>) => void;
   updateStatus: (partial: Partial<SourceStatus> & { id: TickerSourceId }) => void;
   updateNowPlaying?: (state: NowPlayingState | null) => void;
+  updateSensors?: (readings: SensorReading[]) => void;
 }
 
 export interface TickerSource {

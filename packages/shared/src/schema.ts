@@ -4,6 +4,8 @@ export const VisualModeSchema = z.enum([
   'anobar8-vfd',
   'anobar-fed',
   'shinkansen-led',
+  'split-flap',
+  'station-board',
   'clean',
 ]);
 export type VisualMode = z.infer<typeof VisualModeSchema>;
@@ -40,6 +42,9 @@ export const PixelIconIdSchema = z.enum([
   'webhook',
   'alert',
   'info',
+  'cpu',
+  'calendar',
+  'sensor',
 ]);
 export type PixelIconId = z.infer<typeof PixelIconIdSchema>;
 
@@ -53,12 +58,14 @@ export const ChannelIdSchema = z.enum([
   'market',
   'nowplaying',
   'countdown',
+  'system',
   'clock',
 ]);
 export type ChannelId = z.infer<typeof ChannelIdSchema>;
 
 export const TickerSourceIdSchema = z.enum([
   'rss',
+  'nhk-breaking',
   'wikipedia',
   'weather',
   'mastodon',
@@ -67,6 +74,9 @@ export const TickerSourceIdSchema = z.enum([
   'market',
   'nowplaying',
   'countdown',
+  'sysmon',
+  'calendar',
+  'sensors',
   'clock',
   'push',
   'webhook',
@@ -88,6 +98,7 @@ export const WeatherLocationSchema = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
   enabled: z.boolean().default(true),
+  jmaAreaCode: z.string().max(12).optional(),
 });
 export type WeatherLocation = z.infer<typeof WeatherLocationSchema>;
 
@@ -120,10 +131,40 @@ export const DisplaySettingsSchema = z.object({
   breakingAlertEnabled: z.boolean().default(true),
   breakingAlertDurationSec: z.number().min(4).max(30).default(10),
   breakingAlertSound: z.boolean().default(false),
+  breakingAlertVolume: z.number().min(0.05).max(1).default(0.5),
   showSpectrumAnalyzer: z.boolean().default(true),
   spectrumAudioInput: SpectrumAudioInputSchema.default('auto'),
 });
 export type DisplaySettings = z.infer<typeof DisplaySettingsSchema>;
+
+export const NightModeBehaviorSchema = z.enum(['dim', 'clock-only', 'blackout']);
+export type NightModeBehavior = z.infer<typeof NightModeBehaviorSchema>;
+
+export const NightModeConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/).default('23:00'),
+  endTime: z.string().regex(/^\d{2}:\d{2}$/).default('07:00'),
+  behavior: NightModeBehaviorSchema.default('dim'),
+  brightness: z.number().min(0.1).max(1.0).default(0.35),
+  forceAmberVfd: z.boolean().default(true),
+});
+export type NightModeConfig = z.infer<typeof NightModeConfigSchema>;
+
+export const ScenePresetSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1).max(40),
+  activeChannel: ChannelIdSchema.optional(),
+  rotationEnabled: z.boolean().optional(),
+  visualMode: VisualModeSchema.optional(),
+  vfdPalette: VfdPaletteSchema.optional(),
+  layoutMode: LayoutModeSchema.optional(),
+  brightness: z.number().min(0.2).max(2.0).optional(),
+  showSpectrumAnalyzer: z.boolean().optional(),
+  showClockOverlay: z.boolean().optional(),
+  showActivityGraph: z.boolean().optional(),
+  scheduleStart: z.union([z.literal(''), z.string().regex(/^\d{2}:\d{2}$/)]).default(''),
+});
+export type ScenePreset = z.infer<typeof ScenePresetSchema>;
 
 export const ChannelRotationConfigSchema = z.object({
   enabled: z.boolean().default(false),
@@ -145,6 +186,9 @@ export const SourceWeightsSchema = z.object({
   market: z.number().int().min(0).max(10).default(2),
   nowplaying: z.number().int().min(0).max(10).default(2),
   countdown: z.number().int().min(0).max(10).default(1),
+  sysmon: z.number().int().min(0).max(10).default(1),
+  calendar: z.number().int().min(0).max(10).default(2),
+  sensors: z.number().int().min(0).max(10).default(2),
   webhook: z.number().int().min(0).max(10).default(2),
 });
 export type SourceWeights = z.infer<typeof SourceWeightsSchema>;
@@ -162,6 +206,25 @@ export const RssSourceConfigSchema = z.object({
   feeds: z.array(RssFeedConfigSchema).default([]),
 });
 
+export const NhkBreakingSourceConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  pollIntervalSec: z.number().int().min(30).max(600).default(60),
+  url: z.string().url().default('https://news.web.nhk/n-data/conf/na/rss/cat-live.xml'),
+  maxItemAgeMinutes: z.number().int().min(5).max(180).default(30),
+});
+export type NhkBreakingSourceConfig = z.infer<typeof NhkBreakingSourceConfigSchema>;
+
+export const TransitDiscoveredLineSchema = z.object({
+  id: z.string(),
+  railwayKey: z.string(),
+  name: z.string(),
+  operator: z.string(),
+  normal: z.boolean(),
+  severe: z.boolean(),
+  statusText: z.string(),
+});
+export type TransitDiscoveredLine = z.infer<typeof TransitDiscoveredLineSchema>;
+
 export const WikipediaSourceConfigSchema = z.object({
   enabled: z.boolean().default(true),
   lang: z.string().min(2).max(10).default('ja'),
@@ -172,6 +235,9 @@ export const WeatherSourceConfigSchema = z.object({
   enabled: z.boolean().default(true),
   pollIntervalSec: z.number().int().min(60).max(7200).default(900),
   locations: z.array(WeatherLocationSchema).default([]),
+  rainAlertEnabled: z.boolean().default(true),
+  rainAlertBreaking: z.boolean().default(false),
+  jmaWarningEnabled: z.boolean().default(true),
 });
 
 export const MastodonSourceConfigSchema = z.object({
@@ -247,6 +313,44 @@ export const CountdownSourceConfigSchema = z.object({
 });
 export type CountdownSourceConfig = z.infer<typeof CountdownSourceConfigSchema>;
 
+export const SysmonSourceConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  pollIntervalSec: z.number().int().min(5).max(300).default(15),
+  highTempThresholdC: z.number().min(50).max(110).default(80),
+  alertOnHighTemp: z.boolean().default(true),
+});
+export type SysmonSourceConfig = z.infer<typeof SysmonSourceConfigSchema>;
+
+export const CalendarFeedConfigSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1).max(60),
+  url: z.string().url(),
+  enabled: z.boolean().default(true),
+  color: z.string().optional(),
+});
+export type CalendarFeedConfig = z.infer<typeof CalendarFeedConfigSchema>;
+
+export const CalendarSourceConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  pollIntervalSec: z.number().int().min(60).max(3600).default(300),
+  feeds: z.array(CalendarFeedConfigSchema).default([]),
+  windowHours: z.number().int().min(1).max(168).default(24),
+  alertBeforeMinutes: z.number().int().min(0).max(60).default(5),
+});
+export type CalendarSourceConfig = z.infer<typeof CalendarSourceConfigSchema>;
+
+export const SensorsSourceConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  pollIntervalSec: z.number().int().min(30).max(3600).default(120),
+  co2AlertPpm: z.number().int().min(600).max(5000).default(1200),
+  alertOnHighCo2: z.boolean().default(false),
+  switchbotToken: z.string().max(256).default(''),
+  switchbotSecret: z.string().max(256).default(''),
+  switchbotDeviceIds: z.array(z.string().min(1).max(64)).default([]),
+  natureRemoToken: z.string().max(256).default(''),
+});
+export type SensorsSourceConfig = z.infer<typeof SensorsSourceConfigSchema>;
+
 export const WebhookSourceConfigSchema = z.object({
   enabled: z.boolean().default(true),
   secret: z.string().max(128).default(''),
@@ -255,6 +359,7 @@ export type WebhookSourceConfig = z.infer<typeof WebhookSourceConfigSchema>;
 
 export const SourcesConfigSchema = z.object({
   rss: RssSourceConfigSchema.default({}),
+  nhkBreaking: NhkBreakingSourceConfigSchema.default({}),
   wikipedia: WikipediaSourceConfigSchema.default({}),
   weather: WeatherSourceConfigSchema.default({}),
   mastodon: MastodonSourceConfigSchema.default({}),
@@ -263,6 +368,9 @@ export const SourcesConfigSchema = z.object({
   market: MarketSourceConfigSchema.default({}),
   nowplaying: NowPlayingSourceConfigSchema.default({}),
   countdown: CountdownSourceConfigSchema.default({}),
+  sysmon: SysmonSourceConfigSchema.default({}),
+  calendar: CalendarSourceConfigSchema.default({}),
+  sensors: SensorsSourceConfigSchema.default({}),
   webhook: WebhookSourceConfigSchema.default({}),
 });
 export type SourcesConfig = z.infer<typeof SourcesConfigSchema>;
@@ -271,6 +379,8 @@ export const AppConfigSchema = z.object({
   version: z.literal(1).default(1),
   activeChannel: ChannelIdSchema.default('all'),
   display: DisplaySettingsSchema.default({}),
+  nightMode: NightModeConfigSchema.default({}),
+  scenes: z.array(ScenePresetSchema).default([]),
   rotation: ChannelRotationConfigSchema.default({}),
   filtering: FilterConfigSchema.default({}),
   sources: SourcesConfigSchema.default({}),
@@ -280,6 +390,8 @@ export type AppConfig = z.infer<typeof AppConfigSchema>;
 export const PartialAppConfigSchema = z.object({
   activeChannel: ChannelIdSchema.optional(),
   display: DisplaySettingsSchema.partial().optional(),
+  nightMode: NightModeConfigSchema.partial().optional(),
+  scenes: z.array(ScenePresetSchema).optional(),
   rotation: ChannelRotationConfigSchema.partial().optional(),
   filtering: z
     .object({
@@ -291,6 +403,7 @@ export const PartialAppConfigSchema = z.object({
   sources: z
     .object({
       rss: RssSourceConfigSchema.partial().optional(),
+      nhkBreaking: NhkBreakingSourceConfigSchema.partial().optional(),
       wikipedia: WikipediaSourceConfigSchema.partial().optional(),
       weather: WeatherSourceConfigSchema.partial().optional(),
       mastodon: MastodonSourceConfigSchema.partial().optional(),
@@ -299,6 +412,9 @@ export const PartialAppConfigSchema = z.object({
       market: MarketSourceConfigSchema.partial().optional(),
       nowplaying: NowPlayingSourceConfigSchema.partial().optional(),
       countdown: CountdownSourceConfigSchema.partial().optional(),
+      sysmon: SysmonSourceConfigSchema.partial().optional(),
+      calendar: CalendarSourceConfigSchema.partial().optional(),
+      sensors: SensorsSourceConfigSchema.partial().optional(),
       webhook: WebhookSourceConfigSchema.partial().optional(),
     })
     .optional(),
@@ -343,6 +459,35 @@ export const NowPlayingPushInputSchema = z.object({
 });
 export type NowPlayingPushInput = z.infer<typeof NowPlayingPushInputSchema>;
 
+export const SensorReadingSchema = z.object({
+  id: z.string().min(1).max(64),
+  name: z.string().min(1).max(40),
+  temperature: z.number().optional(),
+  humidity: z.number().optional(),
+  co2: z.number().optional(),
+  illuminance: z.number().optional(),
+  powerW: z.number().optional(),
+  battery: z.number().optional(),
+  customText: z.string().max(120).optional(),
+  sourceApp: z.string().default('API'),
+  updatedAt: z.number(),
+});
+export type SensorReading = z.infer<typeof SensorReadingSchema>;
+
+export const SensorPushInputSchema = z.object({
+  id: z.string().trim().min(1).max(64).default('room'),
+  name: z.string().trim().min(1).max(40).default('室内'),
+  temperature: z.number().min(-50).max(100).optional(),
+  humidity: z.number().min(0).max(100).optional(),
+  co2: z.number().min(0).max(20000).optional(),
+  illuminance: z.number().min(0).max(200000).optional(),
+  powerW: z.number().min(0).max(100000).optional(),
+  battery: z.number().min(0).max(100).optional(),
+  customText: z.string().trim().max(120).optional(),
+  sourceApp: z.string().trim().max(40).default('API'),
+});
+export type SensorPushInput = z.infer<typeof SensorPushInputSchema>;
+
 export const ActivityBucketSchema = z.object({
   timestamp: z.number(),
   count: z.number().int().nonnegative(),
@@ -366,6 +511,7 @@ export const ServerStateSchema = z.object({
   statuses: z.array(SourceStatusSchema),
   lanUrls: z.array(z.string()),
   nowPlaying: NowPlayingStateSchema.nullable().default(null),
+  sensors: z.array(SensorReadingSchema).default([]),
 });
 export type ServerState = z.infer<typeof ServerStateSchema>;
 
@@ -389,5 +535,6 @@ export const WsMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('activity:update'), payload: z.array(ActivityBucketSchema) }),
   z.object({ type: z.literal('status:update'), payload: z.array(SourceStatusSchema) }),
   z.object({ type: z.literal('nowplaying:update'), payload: NowPlayingStateSchema.nullable() }),
+  z.object({ type: z.literal('sensors:update'), payload: z.array(SensorReadingSchema) }),
 ]);
 export type WsMessage = z.infer<typeof WsMessageSchema>;
