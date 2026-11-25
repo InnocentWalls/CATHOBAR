@@ -221,7 +221,7 @@ export function parseOpenMeteoForecast(
           breaking: options.rainAlertBreaking,
           icon: 'rain',
           replaceKey: `weather:rain:${loc.id}`,
-          sourceKey: `weather:${loc.id}`,
+          sourceKey: `weather-rain:${loc.id}`,
         };
         break;
       }
@@ -280,7 +280,7 @@ export function parseJmaWarnings(
       breaking: hasEmergency || newlyIssued,
       icon: 'alert',
       replaceKey: `weather:jma:${loc.id}`,
-      sourceKey: `weather:${loc.id}`,
+      sourceKey: `weather-jma:${loc.id}`,
     },
   };
 }
@@ -380,6 +380,9 @@ export class WeatherSource implements TickerSource {
     loc: WeatherLocation,
     cfg: AppConfig['sources']['weather'],
   ): Promise<TickerItem[]> {
+    const wantRain = cfg.rainAlertEnabled && loc.rainAlert !== false;
+    const wantJma = cfg.jmaWarningEnabled && loc.jmaWarning !== false;
+
     const url = new URL('https://api.open-meteo.com/v1/forecast');
     url.searchParams.set('latitude', String(loc.latitude));
     url.searchParams.set('longitude', String(loc.longitude));
@@ -391,7 +394,7 @@ export class WeatherSource implements TickerSource {
       'daily',
       'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max',
     );
-    if (cfg.rainAlertEnabled) {
+    if (wantRain) {
       url.searchParams.set('minutely_15', 'precipitation');
       url.searchParams.set('forecast_minutely_15', '6');
     }
@@ -407,7 +410,12 @@ export class WeatherSource implements TickerSource {
     }
     const data = (await res.json()) as OpenMeteoResponse;
     const nowMs = Date.now();
-    const { weatherItem, rainAlertItem } = parseOpenMeteoForecast(data, loc, cfg, nowMs);
+    const { weatherItem, rainAlertItem } = parseOpenMeteoForecast(
+      data,
+      loc,
+      { rainAlertEnabled: wantRain, rainAlertBreaking: cfg.rainAlertBreaking },
+      nowMs,
+    );
 
     const out: TickerItem[] = [];
     if (weatherItem) out.push(weatherItem);
@@ -424,7 +432,7 @@ export class WeatherSource implements TickerSource {
     }
 
     const areaCode = loc.jmaAreaCode?.trim();
-    if (cfg.jmaWarningEnabled && areaCode) {
+    if (wantJma && areaCode) {
       try {
         const jmaRes = await fetch(
           `https://www.jma.go.jp/bosai/warning/data/warning/${encodeURIComponent(areaCode)}.json`,
@@ -461,7 +469,10 @@ export class WeatherSource implements TickerSource {
 function buildCoordKey(w: AppConfig['sources']['weather']): string {
   const locs = w.locations
     .filter((l) => l.enabled)
-    .map((l) => `${l.id}:${l.cityName}:${l.latitude}:${l.longitude}:${l.jmaAreaCode ?? ''}`)
+    .map(
+      (l) =>
+        `${l.id}:${l.cityName}:${l.latitude}:${l.longitude}:${l.jmaAreaCode ?? ''}:${l.rainAlert !== false}:${l.jmaWarning !== false}`,
+    )
     .join('|');
   return `${locs}#${w.rainAlertEnabled}#${w.rainAlertBreaking}#${w.jmaWarningEnabled}`;
 }

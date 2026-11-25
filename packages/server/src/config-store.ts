@@ -122,6 +122,8 @@ export class ConfigStore {
               ? rawWeather.longitude
               : DEFAULT_CONFIG.sources.weather.locations[0]!.longitude,
           enabled: true,
+          rainAlert: true,
+          jmaWarning: true,
         },
       ];
     }

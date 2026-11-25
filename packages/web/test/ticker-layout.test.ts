@@ -6,6 +6,7 @@ import {
   computeEffectiveChannel,
   computeEdgeAlpha,
   computeLogicalSize,
+  computeStationBadgeWidth,
   TickerLayoutEngine,
 } from '../src/engine/ticker-layout.js';
 
@@ -559,5 +560,7 @@ describe('Night mode, split-flap, station-board, pause nudge & QR code', () => {
     const svg = renderQrSvg('http://192.168.1.50:3000/admin', 160);
     expect(svg).toContain('<svg');
     expect(svg).toContain('width="160"');
+    expect(svg).toContain(`viewBox="0 0 ${matrix.length + 8} ${matrix.length + 8}"`);
+    expect(computeStationBadgeWidth(320)).toBeGreaterThanOrEqual(60);
   });
 });

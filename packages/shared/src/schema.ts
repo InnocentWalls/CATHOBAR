@@ -99,6 +99,8 @@ export const WeatherLocationSchema = z.object({
   longitude: z.number().min(-180).max(180),
   enabled: z.boolean().default(true),
   jmaAreaCode: z.string().max(12).optional(),
+  rainAlert: z.boolean().default(true),
+  jmaWarning: z.boolean().default(true),
 });
 export type WeatherLocation = z.infer<typeof WeatherLocationSchema>;
 

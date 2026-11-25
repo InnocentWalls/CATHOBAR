@@ -99,6 +99,20 @@ export function isItemEnabledBySources(item: TickerItem, sources: SourcesConfig)
     case 'weather': {
       if (!sources.weather.enabled) return false;
       const key = item.sourceKey ?? item.replaceKey;
+      if (key && key.startsWith('weather-rain:')) {
+        if (!sources.weather.rainAlertEnabled) return false;
+        const locId = key.slice('weather-rain:'.length);
+        return sources.weather.locations.some(
+          (l) => l.enabled && l.rainAlert !== false && l.id === locId,
+        );
+      }
+      if (key && key.startsWith('weather-jma:')) {
+        if (!sources.weather.jmaWarningEnabled) return false;
+        const locId = key.slice('weather-jma:'.length);
+        return sources.weather.locations.some(
+          (l) => l.enabled && l.jmaWarning !== false && l.id === locId,
+        );
+      }
       if (key && key.startsWith('weather:')) {
         const locId = key.slice('weather:'.length);
         return sources.weather.locations.some((l) => l.enabled && l.id === locId);

@@ -42,6 +42,10 @@ export interface LogicalSize {
 
 export type MeasureTextFn = (text: string, fontSizePx: number, weight?: number) => number;
 
+export function computeStationBadgeWidth(tickerWidth: number): number {
+  return Math.max(60, Math.min(112, Math.round(tickerWidth * 0.24)));
+}
+
 /**
  * Computes logical dot dimensions preserving aspect ratio for any monitor resolution.
  */
@@ -320,7 +324,7 @@ export class TickerLayoutEngine {
       const safeLanes = Math.max(1, Math.min(3, lanes));
       const laneHeight = tickerHeight / safeLanes;
       const fontSize = Math.max(10, Math.min(laneHeight * 0.64, logicalHeight * 0.44));
-      const badgeColWidth = Math.max(46, Math.min(84, Math.round(tickerWidth * 0.22)));
+      const badgeColWidth = computeStationBadgeWidth(tickerWidth);
       const textAreaWidth = Math.max(40, tickerWidth - badgeColWidth);
       const fadeMargin = Math.max(8, Math.round(textAreaWidth * 0.03));
 

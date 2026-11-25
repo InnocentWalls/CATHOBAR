@@ -180,6 +180,8 @@ export const DEFAULT_CONFIG: AppConfig = {
           longitude: 139.6503,
           enabled: true,
           jmaAreaCode: '130000',
+          rainAlert: true,
+          jmaWarning: true,
         },
       ],
       rainAlertEnabled: true,

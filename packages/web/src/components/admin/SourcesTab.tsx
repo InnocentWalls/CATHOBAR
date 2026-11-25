@@ -177,6 +177,8 @@ export function SourcesTab({
       longitude,
       enabled: true,
       jmaAreaCode,
+      rainAlert: true,
+      jmaWarning: true,
     };
     await updateConfig({
       sources: { weather: { locations: [...config.sources.weather.locations, nextLoc] } },
@@ -1508,9 +1510,9 @@ export function SourcesTab({
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <ToggleChip
-              label="雨雲接近アラート"
+              label="雨雲接近アラート (全体)"
               checked={config.sources.weather.rainAlertEnabled}
               onChange={(v) =>
                 void updateConfig({ sources: { weather: { rainAlertEnabled: v } } })
@@ -1524,7 +1526,7 @@ export function SourcesTab({
               }
             />
             <ToggleChip
-              label="気象庁防災警報"
+              label="気象庁防災警報 (全体)"
               checked={config.sources.weather.jmaWarningEnabled}
               onChange={(v) =>
                 void updateConfig({ sources: { weather: { jmaWarningEnabled: v } } })
@@ -1554,7 +1556,41 @@ export function SourcesTab({
                     ({loc.latitude.toFixed(2)}, {loc.longitude.toFixed(2)})
                   </span>
                 </label>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextLocs = config.sources.weather.locations.map((l) =>
+                        l.id === loc.id ? { ...l, rainAlert: !(l.rainAlert !== false) } : l,
+                      );
+                      void updateConfig({ sources: { weather: { locations: nextLocs } } });
+                    }}
+                    className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                      loc.rainAlert !== false
+                        ? 'border-sky-400/60 bg-sky-500/20 text-sky-200'
+                        : 'border-slate-700 bg-slate-900 text-slate-500'
+                    }`}
+                    title="この地点の雨雲接近アラートON/OFF"
+                  >
+                    雨雲:{loc.rainAlert !== false ? 'ON' : 'OFF'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextLocs = config.sources.weather.locations.map((l) =>
+                        l.id === loc.id ? { ...l, jmaWarning: !(l.jmaWarning !== false) } : l,
+                      );
+                      void updateConfig({ sources: { weather: { locations: nextLocs } } });
+                    }}
+                    className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                      loc.jmaWarning !== false
+                        ? 'border-amber-400/60 bg-amber-500/20 text-amber-200'
+                        : 'border-slate-700 bg-slate-900 text-slate-500'
+                    }`}
+                    title="この地点の気象庁防災警報ON/OFF"
+                  >
+                    警報:{loc.jmaWarning !== false ? 'ON' : 'OFF'}
+                  </button>
                   <input
                     type="text"
                     value={loc.jmaAreaCode ?? ''}
@@ -1565,7 +1601,7 @@ export function SourcesTab({
                       void updateConfig({ sources: { weather: { locations: nextLocs } } });
                     }}
                     placeholder="JMAコード(例:130000)"
-                    className="w-28 rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 font-mono text-[10px]"
+                    className="w-24 rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 font-mono text-[10px]"
                   />
                   <button
                     type="button"

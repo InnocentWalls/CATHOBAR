@@ -1087,4 +1087,71 @@ describe('Additional improvements & new sources & APIs', () => {
     expect(impRes.status).toBe(200);
     expect(hub.getConfig().activeChannel).toBe('system');
   });
+
+  it('filters rain-approach alerts per weather location and prunes immediately when toggled off', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cathobar-weather-perloc-'));
+    tempDirs.push(dir);
+
+    const soonIso = new Date(Date.now() + 25 * 60_000).toISOString();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes('open-meteo.com')) {
+          return new Response(
+            JSON.stringify({
+              current: { temperature_2m: 16.0, relative_humidity_2m: 70, weather_code: 2, precipitation: 0 },
+              daily: {
+                weather_code: [61, 1],
+                temperature_2m_min: [11, 9],
+                temperature_2m_max: [18, 20],
+                precipitation_probability_max: [80, 20],
+              },
+              minutely_15: { time: [soonIso], precipitation: [1.5] },
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ areaTypes: [] }), { status: 200 });
+      }),
+    );
+
+    const store = new ConfigStore(join(dir, 'config.json'));
+    const hub = new TickerHub(store);
+    await hub.init();
+
+    await hub.updateConfig({
+      sources: {
+        weather: {
+          rainAlertEnabled: true,
+          locations: [
+            { id: 'tokyo', cityName: '東京', latitude: 35.67, longitude: 139.65, enabled: true, rainAlert: true, jmaWarning: false },
+            { id: 'osaka', cityName: '大阪', latitude: 34.69, longitude: 135.5, enabled: true, rainAlert: false, jmaWarning: false },
+          ],
+        },
+      },
+    });
+    await hub.refreshSource('weather');
+
+    const items = hub.getState().items.filter((i) => i.source === 'weather');
+    expect(items.some((i) => i.sourceKey === 'weather-rain:tokyo')).toBe(true);
+    expect(items.some((i) => i.sourceKey === 'weather-rain:osaka')).toBe(false);
+    expect(items.some((i) => i.sourceKey === 'weather:osaka')).toBe(true);
+
+    // Turning off rainAlert for Tokyo immediately prunes Tokyo's rain alert while keeping Tokyo's weather
+    await hub.updateConfig({
+      sources: {
+        weather: {
+          locations: [
+            { id: 'tokyo', cityName: '東京', latitude: 35.67, longitude: 139.65, enabled: true, rainAlert: false, jmaWarning: false },
+            { id: 'osaka', cityName: '大阪', latitude: 34.69, longitude: 135.5, enabled: true, rainAlert: false, jmaWarning: false },
+          ],
+        },
+      },
+    });
+    const afterPrune = hub.getState().items.filter((i) => i.source === 'weather');
+    expect(afterPrune.some((i) => i.sourceKey === 'weather-rain:tokyo')).toBe(false);
+    expect(afterPrune.some((i) => i.sourceKey === 'weather:tokyo')).toBe(true);
+    hub.stop();
+  });
 });

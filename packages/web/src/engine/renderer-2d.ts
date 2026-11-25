@@ -10,7 +10,11 @@ import {
 } from '@cathobar/shared';
 import { drawPixelIcon, resolveItemIcon } from './pixel-icons.js';
 import type { SpectrumSnapshot } from './spectrum-analyzer.js';
-import type { ActiveTickerSpan, SplitFlapRowState } from './ticker-layout.js';
+import {
+  computeStationBadgeWidth,
+  type ActiveTickerSpan,
+  type SplitFlapRowState,
+} from './ticker-layout.js';
 
 const FONT_FAMILY =
   '"Noto Sans JP", "BIZ UDGothic", "Yu Gothic UI", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif';
@@ -321,10 +325,12 @@ export class Renderer2D {
     const rowCount = Math.max(1, rows.length || Math.min(3, display.lanes));
     const rowH = tickerHeight / rowCount;
     const cellH = Math.max(12, Math.floor(rowH * 0.78));
-    const cellW = Math.max(9, Math.round(cellH * 0.68));
-    const gapX = Math.max(1, Math.round(cellW * 0.14));
-    const fontSize = Math.max(9, Math.round(cellH * 0.72));
-    const badgeW = display.showSourceBadge ? Math.max(38, Math.min(68, Math.round(tickerWidth * 0.16))) : 0;
+    const cellW = Math.max(12, Math.round(cellH * 0.92));
+    const gapX = Math.max(1, Math.round(cellW * 0.12));
+    const fontSize = Math.max(8, Math.round(cellH * 0.64));
+    const badgeW = display.showSourceBadge
+      ? Math.max(58, Math.min(108, Math.round(tickerWidth * 0.22)))
+      : 0;
 
     for (let r = 0; r < rowCount; r += 1) {
       const row = rows[r];
@@ -343,14 +349,23 @@ export class Renderer2D {
         ctx.fillRect(3, cellTop, badgeW - 6, cellH);
         ctx.fillStyle = row.item.color;
         ctx.fillRect(3, cellTop, 3, cellH);
-        ctx.font = `700 ${Math.max(8, Math.round(fontSize * 0.65))}px ${FONT_FAMILY}`;
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = '#f1f5f9';
+
         ctx.save();
         ctx.beginPath();
         ctx.rect(7, cellTop, badgeW - 11, cellH);
         ctx.clip();
-        ctx.fillText(row.item.badge, 8, cy);
+        ctx.fillStyle = '#f1f5f9';
+        drawFittedText(
+          ctx,
+          row.item.badge,
+          8,
+          cy,
+          Math.max(10, badgeW - 13),
+          Math.max(8, Math.round(cellH * 0.48)),
+          FONT_FAMILY,
+          700,
+          'left',
+        );
         ctx.restore();
       }
 
@@ -395,10 +410,10 @@ export class Renderer2D {
             ctx.translate(cx + cellW * 0.5, cy);
             ctx.scale(1, scaleY);
             ctx.fillStyle = '#fef08a';
-            ctx.fillText(shownChar, 0, 0);
+            ctx.fillText(shownChar, 0, 0, Math.max(4, cellW - 2));
           } else {
             ctx.fillStyle = row.item.priority === 'high' ? '#fbbf24' : '#f8fafc';
-            ctx.fillText(shownChar, cx + cellW * 0.5, cy);
+            ctx.fillText(shownChar, cx + cellW * 0.5, cy, Math.max(4, cellW - 2));
           }
           ctx.restore();
         }
@@ -422,7 +437,7 @@ export class Renderer2D {
   ): void {
     const safeLanes = Math.max(1, Math.min(3, display.lanes));
     const laneHeight = tickerHeight / safeLanes;
-    const badgeColWidth = Math.max(46, Math.min(84, Math.round(tickerWidth * 0.22)));
+    const badgeColWidth = computeStationBadgeWidth(tickerWidth);
     const textAreaWidth = Math.max(40, tickerWidth - badgeColWidth);
 
     // Draw horizontal lane dividers & pick leading span per lane for fixed left column
@@ -440,20 +455,28 @@ export class Renderer2D {
         const padY = Math.max(2, Math.round(laneHeight * 0.14));
         const boxH = Math.max(10, laneHeight - padY * 2);
         const boxY = Math.round(topY + padY);
+        const boxW = badgeColWidth - 7;
         const isHigh = lead.item.priority === 'high';
 
         ctx.fillStyle = isHigh ? '#dc2626' : lead.item.color || '#16a34a';
-        ctx.fillRect(3, boxY, badgeColWidth - 7, boxH);
+        ctx.fillRect(3, boxY, boxW, boxH);
 
         ctx.save();
         ctx.beginPath();
-        ctx.rect(5, boxY, badgeColWidth - 11, boxH);
+        ctx.rect(5, boxY, Math.max(4, boxW - 4), boxH);
         ctx.clip();
-        const badgeFont = Math.max(8, Math.round(boxH * 0.56));
-        ctx.font = `700 ${badgeFont}px ${LED_FONT_FAMILY}`;
-        ctx.textBaseline = 'middle';
         ctx.fillStyle = '#090d12';
-        ctx.fillText(lead.item.badge, 6, cy);
+        drawFittedText(
+          ctx,
+          lead.item.badge,
+          3 + boxW * 0.5,
+          cy,
+          Math.max(10, boxW - 6),
+          Math.max(8, Math.round(boxH * 0.52)),
+          LED_FONT_FAMILY,
+          700,
+          'center',
+        );
         ctx.restore();
       }
     }
@@ -857,6 +880,30 @@ export class Renderer2D {
       ctx.fillRect(x, yBase - h, barW, h);
     }
   }
+}
+
+function drawFittedText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  cy: number,
+  maxWidth: number,
+  baseFontSize: number,
+  fontFamily: string,
+  weight: number,
+  align: CanvasTextAlign = 'left',
+): void {
+  const minFont = Math.max(7, Math.floor(baseFontSize * 0.58));
+  let size = baseFontSize;
+  ctx.font = `${weight} ${size}px ${fontFamily}`;
+  while (size > minFont && ctx.measureText(text).width > maxWidth) {
+    size -= 1;
+    ctx.font = `${weight} ${size}px ${fontFamily}`;
+  }
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = align;
+  ctx.fillText(text, x, cy, maxWidth);
+  ctx.textAlign = 'left';
 }
 
 function formatTime(d: Date): string {
