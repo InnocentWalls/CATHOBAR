@@ -258,7 +258,7 @@ function drawGlyphBoot(
     ctx.fillRect(padX, height - 5, (width - padX * 2) * progress, 2);
   }
 
-  // Left -> Right marquee scroll of boot message
+  // Right -> Left marquee scroll of boot message (ANOBAR standard reading flow)
   const chars = Array.from(boot.message);
   const glyphH = Math.max(12, Math.min(58, Math.round(height * 0.48)));
   const glyphW = Math.max(8, Math.round(glyphH * 0.62));
@@ -267,13 +267,13 @@ function drawGlyphBoot(
 
   const scrollSpanSec = Math.max(0.5, fadeStart - warmupEnd);
   const scrollT = Math.max(0, Math.min(1, (boot.elapsedSec - warmupEnd) / scrollSpanSec));
-  const startX = -totalTextW;
-  const endX = width + cellAdvance * 1.5;
+  const startX = width + cellAdvance * 0.5;
+  const endX = -totalTextW - cellAdvance * 0.5;
   const baseX = startX + (endX - startX) * scrollT;
   const centerY = height * 0.5;
   const glyphTopY = centerY - glyphH * 0.5;
 
-  const scanX = width * 0.52;
+  const scanX = width * 0.48;
   const decodeZoneHalfW = Math.max(10, cellAdvance * 0.48);
 
   if (boot.decodeScan) {
@@ -301,7 +301,7 @@ function drawGlyphBoot(
     const charCenterX = cellX + glyphW * 0.5;
     const isAscii = isGeometricAscii(ch);
 
-    if (!boot.decodeScan || charCenterX < scanX - decodeZoneHalfW) {
+    if (!boot.decodeScan || charCenterX > scanX + decodeZoneHalfW) {
       if (isAscii) {
         drawGeometricGlyph({
           ctx,
@@ -339,7 +339,7 @@ function drawGlyphBoot(
       ctx.fillText(ch, charCenterX, centerY + jitterY, cellAdvance * 0.96);
       ctx.restore();
     } else {
-      // Decoded crisp character to the right of the decode scanline
+      // Decoded crisp character to the left of the decode scanline
       ctx.save();
       ctx.fillStyle = palette.secondary;
       ctx.font = `700 ${asciiFontSize}px ${isAscii ? fontFam : FONT_FAMILY}`;

@@ -344,17 +344,17 @@ export const BOOT_SEQUENCE_MODE_LABELS: Record<
     description: 'VFD/FED/Cleanは暗号グリフ、新幹線/発車標はLEDテスト、パタパタは一斉回転を自動選択',
   },
   'glyph-circuit': {
-    label: '回路パターン・16セグ (左→右)',
+    label: '回路パターン・16セグ (右→左)',
     short: 'CIRCUIT',
     description: 'プリント基板配線＋端点パッド風の独自幾何学グリフでブート暗号を流す',
   },
   'glyph-oscilloscope': {
-    label: '陰極線オシロスコープ (左→右)',
+    label: '陰極線オシロスコープ (右→左)',
     short: 'SCOPE',
     description: '電子ビームの一筆書き波形・輝点ベクター文字でブート暗号を流す',
   },
   'glyph-hex': {
-    label: 'ハニカム六角格子 (左→右)',
+    label: 'ハニカム六角格子 (右→左)',
     short: 'HEX',
     description: '二段六角形メッシュの辺で構成されたオリジナル幾何学文字で流す',
   },
