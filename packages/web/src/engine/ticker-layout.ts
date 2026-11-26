@@ -266,6 +266,10 @@ export class TickerLayoutEngine {
   private danmakuSlotCursor = 0;
   private shinkansenState: ShinkansenState | null = null;
   private lastTickerWidth = 320;
+  private cachedGroupedPool: {
+    buckets: Map<TickerSourceId, { weight: number; items: TickerItem[] }>;
+    totalWeight: number;
+  } | null = null;
 
   setPool(
     items: TickerItem[],
@@ -279,6 +283,7 @@ export class TickerLayoutEngine {
     }
     const filtered = filterByChannel(items, activeChannel, sources).filter((item) => !item.oneShot);
     this.pool = filtered;
+    this.cachedGroupedPool = null;
     if (this.poolCursor >= this.pool.length) {
       this.poolCursor = 0;
     }
@@ -300,6 +305,7 @@ export class TickerLayoutEngine {
   enqueue(items: TickerItem[], activeChannel: ChannelId, sources?: SourcesConfig): void {
     this.activeChannel = activeChannel;
     const filtered = filterByChannel(items, activeChannel, sources);
+    let poolMutated = false;
     for (const item of filtered) {
       if (item.priority === 'high' || item.oneShot) {
         this.priorityQueue.unshift(item);
@@ -308,10 +314,15 @@ export class TickerLayoutEngine {
       }
       if (!item.oneShot && !this.pool.some((p) => p.id === item.id)) {
         this.pool.push(item);
+        poolMutated = true;
       }
     }
     if (this.pool.length > 150) {
       this.pool.splice(0, this.pool.length - 150);
+      poolMutated = true;
+    }
+    if (poolMutated) {
+      this.cachedGroupedPool = null;
     }
     if (this.priorityQueue.length > 80) {
       this.priorityQueue.length = 80;
@@ -401,7 +412,7 @@ export class TickerLayoutEngine {
         span.x -= scrollSpeed * clampedDt;
         span.alpha = computeEdgeAlpha(span.x, span.width, tickerWidth, fadeMargin);
       }
-      this.spans = this.spans.filter((s) => s.x + s.width > -4);
+      this.pruneExitedSpans(-4);
       if (!paused) {
         this.stepLanesWithFont(
           tickerWidth,
@@ -432,7 +443,7 @@ export class TickerLayoutEngine {
         span.x -= scrollSpeed * span.speedScale * clampedDt;
         span.alpha = computeEdgeAlpha(span.x, span.width, textAreaWidth, fadeMargin);
       }
-      this.spans = this.spans.filter((s) => s.x + s.width > -6);
+      this.pruneExitedSpans(-6);
       if (!paused) {
         this.stepLanesWithFont(
           textAreaWidth,
@@ -462,7 +473,7 @@ export class TickerLayoutEngine {
       span.alpha = computeEdgeAlpha(span.x, span.width, tickerWidth, fadeMargin);
     }
 
-    this.spans = this.spans.filter((s) => s.x + s.width > -6);
+    this.pruneExitedSpans(-6);
 
     if (!paused) {
       if (effectiveMode === 'danmaku') {
@@ -844,10 +855,23 @@ export class TickerLayoutEngine {
     return item;
   }
 
+  private pruneExitedSpans(minRightEdge: number): void {
+    for (let i = 0; i < this.spans.length; i += 1) {
+      const s = this.spans[i]!;
+      if (s.x + s.width <= minRightEdge) {
+        this.spans = this.spans.filter((item) => item.x + item.width > minRightEdge);
+        return;
+      }
+    }
+  }
+
   private groupWeightedPool(): {
     buckets: Map<TickerSourceId, { weight: number; items: TickerItem[] }>;
     totalWeight: number;
   } {
+    if (this.cachedGroupedPool) {
+      return this.cachedGroupedPool;
+    }
     const buckets = new Map<TickerSourceId, { weight: number; items: TickerItem[] }>();
     for (const item of this.pool) {
       const weight = getSourceWeight(item.source, this.weights);
@@ -863,7 +887,8 @@ export class TickerLayoutEngine {
     for (const entry of buckets.values()) {
       totalWeight += entry.weight;
     }
-    return { buckets, totalWeight };
+    this.cachedGroupedPool = { buckets, totalWeight };
+    return this.cachedGroupedPool;
   }
 }
 

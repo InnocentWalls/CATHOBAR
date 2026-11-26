@@ -118,6 +118,13 @@ export class TickerEngine {
     nowPlaying: NowPlayingState | null = this.nowPlaying,
     sensors: SensorReading[] = this.sensors,
   ): void {
+    this.activity = activity;
+    this.nowPlaying = nowPlaying;
+    this.sensors = sensors;
+    this.updateConfigAndItems(items, config);
+  }
+
+  updateConfigAndItems(items: TickerItem[], config: AppConfig): void {
     const prevRotChannel = this.lastEffectiveChannel;
     const nextRot = computeEffectiveChannel(config, Date.now()).channel;
     const channelChanged = prevRotChannel !== nextRot || this.config.activeChannel !== config.activeChannel;
@@ -128,9 +135,6 @@ export class TickerEngine {
 
     this.config = config;
     this.allItems = items;
-    this.activity = activity;
-    this.nowPlaying = nowPlaying;
-    this.sensors = sensors;
     this.lastEffectiveChannel = nextRot;
 
     this.spectrumAnalyzer.setInputMode(

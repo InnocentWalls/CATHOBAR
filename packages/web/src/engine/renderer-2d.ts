@@ -31,6 +31,13 @@ const FONT_FAMILY =
 const LED_FONT_FAMILY =
   '"DotGothic16", "BIZ UDGothic", "Noto Sans JP", monospace';
 const FLAP_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789アイウエオカキクケコサシスセソタチツテトナニヌネノ';
+const MAX_SPAN_SPRITE_CACHE = 96;
+
+interface SpanSprite {
+  canvas: HTMLCanvasElement;
+  drawW: number;
+  drawH: number;
+}
 
 export interface ActiveBreakingAlert {
   item: TickerItem;
@@ -44,7 +51,10 @@ export class Renderer2D {
   private width = 640;
   private height = 96;
   private scale = 1;
+  private visualMode: VisualMode = 'anobar8-vfd';
   private activeFontFamily = FONT_FAMILY;
+  private readonly spanSprites = new Map<string, SpanSprite>();
+  private readonly clockWidthCache = new Map<string, number>();
 
   constructor() {
     this.canvas = document.createElement('canvas');
@@ -53,6 +63,13 @@ export class Renderer2D {
       throw new Error('Failed to create 2D canvas context');
     }
     this.ctx = ctx;
+
+    if (typeof document !== 'undefined' && document.fonts?.ready) {
+      void document.fonts.ready.then(() => {
+        this.spanSprites.clear();
+        this.clockWidthCache.clear();
+      });
+    }
   }
 
   configure(
@@ -67,9 +84,13 @@ export class Renderer2D {
       this.canvas.width = nextW;
       this.canvas.height = nextH;
     }
+    if (this.scale !== renderScale || this.visualMode !== visualMode) {
+      this.spanSprites.clear();
+    }
     this.width = logicalWidth;
     this.height = logicalHeight;
     this.scale = renderScale;
+    this.visualMode = visualMode;
     this.activeFontFamily =
       visualMode === 'shinkansen-led' || visualMode === 'station-board'
         ? LED_FONT_FAMILY
@@ -100,15 +121,28 @@ export class Renderer2D {
     visualMode: VisualMode,
   ): number {
     if (!showClockOverlay || activeChannel === 'clock') return 0;
+    const key = `${tickerHeight}|${activeChannel}|${visualMode}`;
+    const cached = this.clockWidthCache.get(key);
+    if (cached !== undefined) return cached;
+
+    let width: number;
     if (visualMode === 'shinkansen-led' && tickerHeight <= 40) {
       const compactSize = Math.max(8, Math.round(tickerHeight * 0.44));
       this.ctx.font = `700 ${compactSize}px "JetBrains Mono", "Consolas", monospace`;
-      return Math.ceil(this.ctx.measureText('00:00').width + 8);
+      width = Math.ceil(this.ctx.measureText('00:00').width + 8);
+    } else {
+      const clockFontSize = Math.max(9, Math.min(20, Math.round(tickerHeight * 0.24)));
+      this.ctx.font = `700 ${clockFontSize}px "JetBrains Mono", "Consolas", monospace`;
+      const timeWidth = this.ctx.measureText('00:00:00').width;
+      width = Math.ceil(timeWidth + 16);
     }
-    const clockFontSize = Math.max(9, Math.min(20, Math.round(tickerHeight * 0.24)));
-    this.ctx.font = `700 ${clockFontSize}px "JetBrains Mono", "Consolas", monospace`;
-    const timeWidth = this.ctx.measureText('00:00:00').width;
-    return Math.ceil(timeWidth + 16);
+
+    if (this.clockWidthCache.size >= 64) {
+      const oldest = this.clockWidthCache.keys().next().value;
+      if (oldest !== undefined) this.clockWidthCache.delete(oldest);
+    }
+    this.clockWidthCache.set(key, width);
+    return width;
   }
 
   getRightOverlayWidth(
@@ -669,9 +703,23 @@ export class Renderer2D {
 
     for (const span of spans) {
       const centerY = span.yRatio * tickerHeight;
+      const drawX = badgeColWidth + span.x;
+      const sprite = this.getOrCreateSpanSprite(span, display, true);
+      if (sprite) {
+        if (span.alpha < 0.999) {
+          ctx.save();
+          ctx.globalAlpha = span.alpha;
+          ctx.drawImage(sprite.canvas, drawX - 1, centerY - sprite.drawH * 0.5, sprite.drawW, sprite.drawH);
+          ctx.restore();
+        } else {
+          ctx.drawImage(sprite.canvas, drawX - 1, centerY - sprite.drawH * 0.5, sprite.drawW, sprite.drawH);
+        }
+        continue;
+      }
+
       ctx.save();
       ctx.globalAlpha = span.alpha;
-      let cursorX = badgeColWidth + span.x;
+      let cursorX = drawX;
 
       if (display.showPixelIcons && span.iconWidth > 0) {
         const iconSize = Math.max(10, Math.round(span.fontSize * 0.92));
@@ -716,6 +764,18 @@ export class Renderer2D {
 
     for (const span of spans) {
       const centerY = span.yRatio * tickerHeight;
+      const sprite = this.getOrCreateSpanSprite(span, display, false);
+      if (sprite) {
+        if (span.alpha < 0.999) {
+          ctx.save();
+          ctx.globalAlpha = span.alpha;
+          ctx.drawImage(sprite.canvas, span.x - 1, centerY - sprite.drawH * 0.5, sprite.drawW, sprite.drawH);
+          ctx.restore();
+        } else {
+          ctx.drawImage(sprite.canvas, span.x - 1, centerY - sprite.drawH * 0.5, sprite.drawW, sprite.drawH);
+        }
+        continue;
+      }
 
       ctx.save();
       ctx.globalAlpha = span.alpha;
@@ -763,6 +823,103 @@ export class Renderer2D {
     }
 
     ctx.restore();
+  }
+
+  private getOrCreateSpanSprite(
+    span: ActiveTickerSpan,
+    display: DisplaySettings,
+    isStationBoard: boolean,
+  ): SpanSprite | null {
+    if (typeof document === 'undefined') return null;
+    const showBadge = !isStationBoard && display.showSourceBadge && span.badgeWidth > 0;
+    const showIcons = display.showPixelIcons && span.iconWidth > 0;
+    const key = `${span.item.id}|${span.item.badge}|${span.item.text}|${span.item.color}|${span.item.priority}|${span.item.icon ?? ''}|${display.visualMode}|${this.scale}|${showBadge ? 1 : 0}|${showIcons ? 1 : 0}|${Math.round(span.fontSize * 10)}|${isStationBoard ? 1 : 0}`;
+
+    const cached = this.spanSprites.get(key);
+    if (cached) {
+      this.spanSprites.delete(key);
+      this.spanSprites.set(key, cached);
+      return cached;
+    }
+
+    const logicalH = Math.max(12, Math.ceil(span.fontSize * 1.45));
+    const logicalW = Math.max(8, Math.ceil(span.width) + 4);
+    const physW = Math.max(1, Math.ceil(logicalW * this.scale));
+    const physH = Math.max(1, Math.ceil(logicalH * this.scale));
+    if (physW > 4096 || physH > 1024) {
+      return null;
+    }
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width = physW;
+    offscreen.height = physH;
+    const sctx = offscreen.getContext('2d');
+    if (!sctx) return null;
+
+    sctx.scale(this.scale, this.scale);
+    sctx.textBaseline = 'middle';
+
+    const isMono = display.visualMode === 'anobar8-vfd';
+    const isShinkansen = display.visualMode === 'shinkansen-led';
+    const fontFam = isStationBoard || isShinkansen ? LED_FONT_FAMILY : FONT_FAMILY;
+    const centerY = logicalH * 0.5;
+    let cursorX = 1;
+
+    if (showIcons) {
+      const iconSize = Math.max(10, Math.round(span.fontSize * 0.92));
+      drawPixelIcon(
+        sctx,
+        resolveItemIcon(span.item),
+        cursorX,
+        centerY,
+        iconSize,
+        display.visualMode,
+        span.item.color,
+        span.item.priority === 'high',
+      );
+      cursorX += span.iconWidth;
+    }
+
+    if (showBadge) {
+      const badgeSize = Math.max(8, span.fontSize * 0.84);
+      sctx.font = `700 ${badgeSize}px ${fontFam}`;
+      if (isShinkansen) {
+        sctx.fillStyle = span.item.priority === 'high' ? '#ff2a22' : '#18ff4d';
+      } else if (isMono) {
+        sctx.fillStyle = '#a8a8a8';
+      } else {
+        sctx.fillStyle = span.item.color;
+      }
+      sctx.fillText(`[${span.item.badge}]`, cursorX, centerY);
+      cursorX += span.badgeWidth;
+    }
+
+    sctx.font = `500 ${span.fontSize}px ${fontFam}`;
+    if (isStationBoard) {
+      sctx.fillStyle = span.item.priority === 'high' ? '#ff9614' : '#f8fafc';
+    } else if (isShinkansen) {
+      sctx.fillStyle = span.item.priority === 'high' ? '#ff3b30' : '#ff9614';
+    } else if (isMono) {
+      sctx.fillStyle = span.item.priority === 'high' ? '#ffffff' : '#e5e5e5';
+    } else {
+      sctx.fillStyle = '#f8fafc';
+    }
+    sctx.fillText(span.item.text, cursorX, centerY);
+
+    const sprite: SpanSprite = {
+      canvas: offscreen,
+      drawW: physW / this.scale,
+      drawH: physH / this.scale,
+    };
+
+    if (this.spanSprites.size >= MAX_SPAN_SPRITE_CACHE) {
+      const oldestKey = this.spanSprites.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.spanSprites.delete(oldestKey);
+      }
+    }
+    this.spanSprites.set(key, sprite);
+    return sprite;
   }
 
   private drawSpectrumAnalyzer(
@@ -1037,7 +1194,11 @@ export class Renderer2D {
     const barCount = Math.max(1, activity.length);
     const barSlot = this.width / barCount;
     const barW = Math.max(1, barSlot - 1);
-    const maxCount = Math.max(3, ...activity.map((b) => b.count));
+    let maxCount = 3;
+    for (let i = 0; i < activity.length; i += 1) {
+      const c = activity[i]?.count ?? 0;
+      if (c > maxCount) maxCount = c;
+    }
 
     ctx.fillStyle = isShinkansen ? 'rgba(24,255,77,0.22)' : 'rgba(255,255,255,0.08)';
     ctx.fillRect(0, yBase - graphHeight, this.width, 1);

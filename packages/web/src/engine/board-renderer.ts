@@ -36,6 +36,84 @@ const FONT_SANS =
 const FONT_LED = '"DotGothic16", "BIZ UDGothic", "Noto Sans JP", monospace';
 const FONT_MONO = '"JetBrains Mono", "Consolas", monospace';
 
+const MAX_BOARD_TEXT_CACHE = 256;
+const widthCache = new Map<string, number>();
+const truncateCache = new Map<string, string>();
+const wrapCache = new Map<string, string[]>();
+
+if (typeof document !== 'undefined' && document.fonts?.ready) {
+  void document.fonts.ready.then(() => {
+    widthCache.clear();
+    truncateCache.clear();
+    wrapCache.clear();
+  });
+}
+
+function setLru<V>(map: Map<string, V>, key: string, value: V): V {
+  if (map.size >= MAX_BOARD_TEXT_CACHE) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
+  return value;
+}
+
+function measureWidthCached(ctx: CanvasRenderingContext2D, font: string, text: string): number {
+  const key = `${font}|${text}`;
+  const cached = widthCache.get(key);
+  if (cached !== undefined) return cached;
+  ctx.font = font;
+  return setLru(widthCache, key, ctx.measureText(text).width);
+}
+
+function truncateWithEllipsisCached(
+  ctx: CanvasRenderingContext2D,
+  font: string,
+  text: string,
+  maxWidth: number,
+): string {
+  const key = `${font}|${Math.round(maxWidth)}|${text}`;
+  const cached = truncateCache.get(key);
+  if (cached !== undefined) return cached;
+  ctx.font = font;
+  return setLru(
+    truncateCache,
+    key,
+    truncateWithEllipsis(text, maxWidth, (s) => ctx.measureText(s).width),
+  );
+}
+
+function wrapTextLinesCached(
+  ctx: CanvasRenderingContext2D,
+  font: string,
+  text: string,
+  maxWidth: number,
+  maxLines: number,
+): string[] {
+  const key = `${font}|${Math.round(maxWidth)}|${maxLines}|${text}`;
+  const cached = wrapCache.get(key);
+  if (cached !== undefined) return cached;
+  ctx.font = font;
+  return setLru(
+    wrapCache,
+    key,
+    wrapTextLines(text, maxWidth, (s) => ctx.measureText(s).width, maxLines),
+  );
+}
+
+interface BoardDataCacheEntry {
+  allItems: TickerItem[];
+  sources: SourcesConfig;
+  activeChannel: ChannelId;
+  sorted: TickerItem[];
+  marketItems: TickerItem[];
+  safetyItems: TickerItem[];
+  sysItems: TickerItem[];
+  timeTags: string[];
+}
+
+let boardDataCache: BoardDataCacheEntry | null = null;
+
 export function computeScreenRegions(
   width: number,
   height: number,
@@ -408,10 +486,11 @@ export function drawBoardHeader(params: {
         ctx.beginPath();
         ctx.rect(cursorX, rect.y, availMid, rect.h);
         ctx.clip();
-        ctx.font = `500 ${infoSize}px ${pal.fontFamily}`;
+        const midFont = `500 ${infoSize}px ${pal.fontFamily}`;
+        ctx.font = midFont;
         ctx.fillStyle = npSummary && !weatherSummary ? '#f472b6' : pal.secondaryText;
         ctx.textBaseline = 'middle';
-        ctx.fillText(truncateWithEllipsis(midText, availMid, (s) => ctx.measureText(s).width), cursorX, cy);
+        ctx.fillText(truncateWithEllipsisCached(ctx, midFont, midText, availMid), cursorX, cy);
         ctx.restore();
       }
     }
@@ -508,13 +587,12 @@ export function drawBoardHeader(params: {
       );
       row1X += iconSize + 6;
     }
-    ctx.font = `600 ${lineFont}px ${pal.fontFamily}`;
+    const row1Font = `600 ${lineFont}px ${pal.fontFamily}`;
+    ctx.font = row1Font;
     ctx.fillStyle = pal.primaryText;
     const wText = `${activeWeather.badge}  ${activeWeather.text}`;
     ctx.fillText(
-      truncateWithEllipsis(wText, Math.max(20, specBoxX - row1X - padX), (s) =>
-        ctx.measureText(s).width,
-      ),
+      truncateWithEllipsisCached(ctx, row1Font, wText, Math.max(20, specBoxX - row1X - padX)),
       row1X,
       line1Y,
     );
@@ -544,7 +622,8 @@ export function drawBoardHeader(params: {
       : '';
 
   const row2Text = [npSummary, sensorSummary].filter(Boolean).join('   |   ');
-  ctx.font = `500 ${Math.max(8, Math.round(lineFont * 0.92))}px ${pal.fontFamily}`;
+  const row2Font = `500 ${Math.max(8, Math.round(lineFont * 0.92))}px ${pal.fontFamily}`;
+  ctx.font = row2Font;
   if (row2Text) {
     ctx.fillStyle = npSummary
       ? pal.isMono
@@ -554,9 +633,7 @@ export function drawBoardHeader(params: {
           : '#f472b6'
       : pal.secondaryText;
     ctx.fillText(
-      truncateWithEllipsis(row2Text, Math.max(20, midAvailW - padX), (s) =>
-        ctx.measureText(s).width,
-      ),
+      truncateWithEllipsisCached(ctx, row2Font, row2Text, Math.max(20, midAvailW - padX)),
       midStartX + padX,
       line2Y,
     );
@@ -616,11 +693,39 @@ export function drawBoardBody(params: {
   if (rect.w <= 0 || rect.h <= 0) return;
 
   const pal = getModePalette(display.visualMode, transparent);
-  const filtered = filterByChannel(allItems, activeChannel, sources).filter((i) => !i.oneShot);
-  const sorted = [...filtered].sort((a, b) => {
-    if (a.priority !== b.priority) return a.priority === 'high' ? -1 : 1;
-    return b.timestamp - a.timestamp;
-  });
+  if (
+    !boardDataCache ||
+    boardDataCache.allItems !== allItems ||
+    boardDataCache.sources !== sources ||
+    boardDataCache.activeChannel !== activeChannel
+  ) {
+    const filtered = filterByChannel(allItems, activeChannel, sources).filter((i) => !i.oneShot);
+    const sorted = [...filtered].sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority === 'high' ? -1 : 1;
+      return b.timestamp - a.timestamp;
+    });
+    const marketItems = allItems.filter((i) => i.source === 'market' && !i.oneShot).slice(0, 3);
+    const safetyItems = allItems
+      .filter((i) => (i.source === 'earthquake' || i.source === 'transit') && !i.oneShot)
+      .slice(0, 2);
+    const sysItems = allItems
+      .filter(
+        (i) => (i.source === 'sysmon' || i.source === 'countdown' || i.source === 'calendar') && !i.oneShot,
+      )
+      .slice(0, 2);
+    const timeTags = sorted.slice(0, 10).map((i) => formatShortTime(i.timestamp));
+    boardDataCache = {
+      allItems,
+      sources,
+      activeChannel,
+      sorted,
+      marketItems,
+      safetyItems,
+      sysItems,
+      timeTags,
+    };
+  }
+  const { sorted, marketItems, safetyItems, sysItems, timeTags } = boardDataCache;
 
   ctx.save();
   ctx.beginPath();
@@ -666,10 +771,11 @@ export function drawBoardBody(params: {
       cx += Math.ceil(ctx.measureText(badge).width) + 5;
 
       const maxTextW = Math.max(20, rect.x + rect.w - cx - pad);
-      ctx.font = `500 ${rowFont}px ${pal.fontFamily}`;
+      const rowFontStr = `500 ${rowFont}px ${pal.fontFamily}`;
+      ctx.font = rowFontStr;
       ctx.fillStyle = item.priority === 'high' ? pal.highText : pal.primaryText;
       ctx.fillText(
-        truncateWithEllipsis(item.text, maxTextW, (s) => ctx.measureText(s).width),
+        truncateWithEllipsisCached(ctx, rowFontStr, item.text, maxTextW),
         cx,
         cy,
       );
@@ -743,9 +849,10 @@ export function drawBoardBody(params: {
       }
 
       if (display.showSourceBadge) {
-        ctx.font = `700 ${badgeFont}px ${pal.fontFamily}`;
+        const badgeFontStr = `700 ${badgeFont}px ${pal.fontFamily}`;
         const badgeText = `[${item.badge}]`;
-        const bW = Math.ceil(ctx.measureText(badgeText).width) + 5;
+        const bW = Math.ceil(measureWidthCached(ctx, badgeFontStr, badgeText)) + 5;
+        ctx.font = badgeFontStr;
         ctx.fillStyle =
           item.priority === 'high'
             ? pal.highText
@@ -758,10 +865,11 @@ export function drawBoardBody(params: {
         cx += bW;
       }
 
-      const timeTag = formatShortTime(item.timestamp);
-      ctx.font = `500 ${Math.max(7, Math.round(badgeFont * 0.9))}px ${FONT_MONO}`;
-      const timeTagW = Math.ceil(ctx.measureText(timeTag).width) + 6;
+      const timeTag = timeTags[i] ?? formatShortTime(item.timestamp);
+      const timeFontStr = `500 ${Math.max(7, Math.round(badgeFont * 0.9))}px ${FONT_MONO}`;
+      const timeTagW = Math.ceil(measureWidthCached(ctx, timeFontStr, timeTag)) + 6;
       const timeX = rightX - pad - timeTagW + 4;
+      ctx.font = timeFontStr;
       ctx.fillStyle = pal.mutedText;
       ctx.fillText(timeTag, timeX, cy);
 
@@ -770,9 +878,10 @@ export function drawBoardBody(params: {
       ctx.beginPath();
       ctx.rect(cx, topY, textAvailW, rowH);
       ctx.clip();
-      ctx.font = `500 ${rowFont}px ${pal.fontFamily}`;
+      const rowFontStr = `500 ${rowFont}px ${pal.fontFamily}`;
+      ctx.font = rowFontStr;
       ctx.fillStyle = item.priority === 'high' ? pal.highText : pal.primaryText;
-      const measuredW = ctx.measureText(item.text).width;
+      const measuredW = measureWidthCached(ctx, rowFontStr, item.text);
       if (i === 0 && measuredW > textAvailW) {
         // Gentle periodic pan for top headline
         const overflow = measuredW - textAvailW + 12;
@@ -781,7 +890,7 @@ export function drawBoardBody(params: {
         ctx.fillText(item.text, cx - clamped, cy);
       } else {
         ctx.fillText(
-          truncateWithEllipsis(item.text, textAvailW, (s) => ctx.measureText(s).width),
+          truncateWithEllipsisCached(ctx, rowFontStr, item.text, textAvailW),
           cx,
           cy,
         );
@@ -797,16 +906,6 @@ export function drawBoardBody(params: {
   const boxW = Math.max(40, rightW - pad * 1.7);
   const availSideH = Math.max(40, rect.h - cardGap * 2);
   const cardH = Math.floor((availSideH - cardGap * 2) / 3);
-
-  const marketItems = allItems.filter((i) => i.source === 'market' && !i.oneShot).slice(0, 3);
-  const safetyItems = allItems
-    .filter((i) => (i.source === 'earthquake' || i.source === 'transit') && !i.oneShot)
-    .slice(0, 2);
-  const sysItems = allItems
-    .filter(
-      (i) => (i.source === 'sysmon' || i.source === 'countdown' || i.source === 'calendar') && !i.oneShot,
-    )
-    .slice(0, 2);
 
   // Card 1: Market / Alerts / Safe Status
   const c1Y = rect.y + cardGap;
@@ -864,11 +963,9 @@ export function drawBoardBody(params: {
   } else {
     const spotlight = sorted[0];
     const spotFont = Math.max(8, Math.min(13, Math.round(c3H * 0.19)));
-    ctx.font = `500 ${spotFont}px ${pal.fontFamily}`;
+    const spotFontStr = `500 ${spotFont}px ${pal.fontFamily}`;
     const wrapped = spotlight
-      ? wrapTextLines(`[${spotlight.badge}] ${spotlight.text}`, boxW - cardPad * 2, (s) =>
-          ctx.measureText(s).width,
-        2)
+      ? wrapTextLinesCached(ctx, spotFontStr, `[${spotlight.badge}] ${spotlight.text}`, boxW - cardPad * 2, 2)
       : ['最新トピック待機中'];
     drawCardLines(ctx, boxX + cardPad, c3Y, boxW - cardPad * 2, c3H, 'HEADLINE SPOTLIGHT', wrapped, pal);
   }
@@ -938,11 +1035,12 @@ export function drawFullScreenClockShowcase(params: {
       ? `♪ ${nowPlaying.title}${nowPlaying.artist ? ` - ${nowPlaying.artist}` : ''}`
       : '';
 
-  ctx.font = `500 ${infoSize}px ${pal.fontFamily}`;
+  const infoFont = `500 ${infoSize}px ${pal.fontFamily}`;
+  ctx.font = infoFont;
   if (weatherLine) {
     ctx.fillStyle = pal.primaryText;
     ctx.fillText(
-      truncateWithEllipsis(weatherLine, rect.w - pad * 2, (s) => ctx.measureText(s).width),
+      truncateWithEllipsisCached(ctx, infoFont, weatherLine, rect.w - pad * 2),
       centerX,
       rect.y + rect.h * 0.59,
     );
@@ -950,7 +1048,7 @@ export function drawFullScreenClockShowcase(params: {
   const subLine = [npLine, sensorLine].filter(Boolean).join('   |   ') || 'STANDBY';
   ctx.fillStyle = npLine ? (pal.isMono ? '#e5e5e5' : '#f472b6') : pal.secondaryText;
   ctx.fillText(
-    truncateWithEllipsis(subLine, rect.w - pad * 2, (s) => ctx.measureText(s).width),
+    truncateWithEllipsisCached(ctx, infoFont, subLine, rect.w - pad * 2),
     centerX,
     rect.y + rect.h * 0.69,
   );
@@ -1161,7 +1259,8 @@ function drawCardLines(
   const maxLines = Math.max(1, Math.min(3, lines.length));
   const lineStep = availH / maxLines;
 
-  ctx.font = `500 ${bodyFont}px ${pal.fontFamily}`;
+  const bodyFontStr = `500 ${bodyFont}px ${pal.fontFamily}`;
+  ctx.font = bodyFontStr;
   for (let i = 0; i < maxLines; i += 1) {
     const line = lines[i]!;
     ctx.fillStyle =
@@ -1173,7 +1272,7 @@ function drawCardLines(
           ? pal.primaryText
           : pal.secondaryText;
     ctx.fillText(
-      truncateWithEllipsis(line, maxWidth, (s) => ctx.measureText(s).width),
+      truncateWithEllipsisCached(ctx, bodyFontStr, line, maxWidth),
       x,
       bodyTop + i * lineStep,
     );

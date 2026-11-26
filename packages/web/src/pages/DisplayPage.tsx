@@ -100,11 +100,45 @@ export function DisplayPage() {
   }, [config, urlParams]);
 
   const [hudVisible, setHudVisible] = useState(false);
+  const [hudMounted, setHudMounted] = useState(false);
   const [paused, setPaused] = useState(false);
   const [showQr, setShowQr] = useState(false);
   const [stats, setStats] = useState<EngineStats | null>(null);
   const hideTimer = useRef<number | null>(null);
+  const unmountTimer = useRef<number | null>(null);
   const engineRef = useRef<TickerEngine | null>(null);
+  const hudVisibleRef = useRef(false);
+  const latestStatsRef = useRef<EngineStats | null>(null);
+  hudVisibleRef.current = hudVisible;
+
+  const handleStats = useCallback((next: EngineStats) => {
+    latestStatsRef.current = next;
+    if (hudVisibleRef.current) {
+      setStats(next);
+    }
+  }, []);
+
+  const handleEngineReady = useCallback((eng: TickerEngine | null) => {
+    engineRef.current = eng;
+  }, []);
+
+  useEffect(() => {
+    if (hudVisible) {
+      if (unmountTimer.current !== null) {
+        clearTimeout(unmountTimer.current);
+        unmountTimer.current = null;
+      }
+      setHudMounted(true);
+      if (latestStatsRef.current) {
+        setStats(latestStatsRef.current);
+      }
+    } else {
+      unmountTimer.current = window.setTimeout(() => {
+        setHudMounted(false);
+        unmountTimer.current = null;
+      }, 320);
+    }
+  }, [hudVisible]);
 
   useEffect(() => {
     if (isTransparent) {
@@ -132,6 +166,9 @@ export function DisplayPage() {
     return () => {
       if (hideTimer.current !== null) {
         clearTimeout(hideTimer.current);
+      }
+      if (unmountTimer.current !== null) {
+        clearTimeout(unmountTimer.current);
       }
     };
   }, []);
@@ -254,10 +291,8 @@ export function DisplayPage() {
         disableAutoBoot={disableAutoBoot}
         transparent={isTransparent}
         paused={paused}
-        onStats={setStats}
-        onEngineReady={(eng) => {
-          engineRef.current = eng;
-        }}
+        onStats={handleStats}
+        onEngineReady={handleEngineReady}
       />
 
       {!connected && !isTransparent && (
@@ -286,7 +321,7 @@ export function DisplayPage() {
         </div>
       )}
 
-      {!hideHudForever && (
+      {!hideHudForever && hudMounted && (
         <div
           className={`absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-2 bg-slate-950/85 px-3 py-1.5 backdrop-blur-md transition-opacity duration-300 ${
             hudVisible ? 'opacity-100' : 'pointer-events-none opacity-0'

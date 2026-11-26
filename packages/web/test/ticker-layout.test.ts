@@ -3,6 +3,8 @@ import { DEFAULT_CONFIG, evaluateNightMode, type TickerItem } from '@cathobar/sh
 import { computeScreenRegions, wrapTextLines } from '../src/engine/board-renderer.js';
 import { resolveItemIcon } from '../src/engine/pixel-icons.js';
 import { generateQrMatrix, renderQrSvg } from '../src/engine/qrcode.js';
+import { computeBloomDimensions, computePersistenceDecay } from '../src/engine/renderer-gl.js';
+import { SpectrumAnalyzer } from '../src/engine/spectrum-analyzer.js';
 import {
   computeEffectiveChannel,
   computeEdgeAlpha,
@@ -809,5 +811,142 @@ describe('Standard 16:9 / 4K full-screen layout support', () => {
     expect(computeRenderScale(2160, 240, 135, 'shinkansen-led', 'wall')).toBe(1);
     expect(computeRenderScale(480, 384, 96, 'anobar8-vfd', 'bar')).toBe(1);
     expect(computeRenderScale(2160, 640, 360, 'anobar8-vfd', 'wall')).toBe(2);
+  });
+});
+
+describe('High-refresh-rate & performance optimizations', () => {
+  const measure = (text: string, size: number, weight = 500) =>
+    text.length * size * (weight >= 700 ? 0.68 : 0.6);
+
+  it('invalidates cached weighted pool on setPool and enqueue', () => {
+    const engine = new TickerLayoutEngine();
+    const rssItem: TickerItem = {
+      id: 'r1',
+      source: 'rss',
+      badge: 'NEWS',
+      text: 'Initial RSS',
+      color: '#38bdf8',
+      timestamp: 1000,
+      priority: 'normal',
+      oneShot: false,
+      breaking: false,
+    };
+    const weatherItem: TickerItem = {
+      id: 'w1',
+      source: 'weather',
+      badge: '天気',
+      text: '晴れ',
+      color: '#facc15',
+      timestamp: 1001,
+      priority: 'normal',
+      oneShot: false,
+      breaking: false,
+    };
+
+    engine.setPool([rssItem], 'all', undefined, { rss: 2, weather: 2 });
+    const s1 = engine.step({
+      dtSec: 0.016,
+      tickerWidth: 80,
+      tickerHeight: 82,
+      logicalHeight: 96,
+      lanes: 1,
+      layoutMode: 'lanes',
+      visualMode: 'anobar8-vfd',
+      shinkansenStyle: 'scroll',
+      activeChannel: 'all',
+      scrollSpeed: 5000,
+      showBadge: true,
+      measureText: measure,
+    });
+    expect(s1[0]?.item.source).toBe('rss');
+
+    // Enqueue a persistent weather item and ensure it enters the weighted pool cache
+    engine.enqueue([weatherItem], 'all');
+    const seenSources = new Set<string>();
+    for (let i = 0; i < 6; i += 1) {
+      engine.step({
+        dtSec: 0.5,
+        tickerWidth: 80,
+        tickerHeight: 82,
+        logicalHeight: 96,
+        lanes: 1,
+        layoutMode: 'lanes',
+        visualMode: 'anobar8-vfd',
+        shinkansenStyle: 'scroll',
+        activeChannel: 'all',
+        scrollSpeed: 5000,
+        showBadge: true,
+        measureText: measure,
+      });
+      const stepSpans = engine.step({
+        dtSec: 0.016,
+        tickerWidth: 80,
+        tickerHeight: 82,
+        logicalHeight: 96,
+        lanes: 1,
+        layoutMode: 'lanes',
+        visualMode: 'anobar8-vfd',
+        shinkansenStyle: 'scroll',
+        activeChannel: 'all',
+        scrollSpeed: 5000,
+        showBadge: true,
+        measureText: measure,
+      });
+      for (const sp of stepSpans) seenSources.add(sp.item.source);
+    }
+    expect(seenSources.has('weather')).toBe(true);
+  });
+
+  it('normalizes WebGL persistence decay identically over 1 second at 60Hz, 144Hz, and 240Hz', () => {
+    const base = 0.7 * 0.72;
+    const oneSecAt60 = Math.pow(computePersistenceDecay(base, 1 / 60), 60);
+    const oneSecAt144 = Math.pow(computePersistenceDecay(base, 1 / 144), 144);
+    const oneSecAt240 = Math.pow(computePersistenceDecay(base, 1 / 240), 240);
+
+    expect(oneSecAt144).toBeCloseTo(oneSecAt60, 5);
+    expect(oneSecAt240).toBeCloseTo(oneSecAt60, 5);
+    expect(computePersistenceDecay(0, 1 / 144)).toBe(0);
+  });
+
+  it('computes compact bloom FBO dimensions bounded at <= 640px while respecting source bounds', () => {
+    // Classic bar (640x96)
+    expect(computeBloomDimensions(640, 96, 640, 96)).toEqual({ width: 320, height: 48 });
+    // Shinkansen LED bar (240x24)
+    expect(computeBloomDimensions(240, 24, 240, 24)).toEqual({ width: 120, height: 24 });
+    // 16:9 board at 2x render scale (640x360 logical, 1280x720 source)
+    expect(computeBloomDimensions(640, 360, 1280, 720)).toEqual({ width: 320, height: 180 });
+    // Large logical board (1280x720) caps bloom max dimension at 640
+    const large = computeBloomDimensions(1280, 720, 1920, 1080);
+    expect(large.width).toBeLessThanOrEqual(640);
+    expect(large.height).toBeLessThanOrEqual(360);
+  });
+
+  it('keeps SpectrumAnalyzer attack envelope frame-rate independent and reuses typed buffers', () => {
+    const analyzer60 = new SpectrumAnalyzer();
+    const analyzer240 = new SpectrumAnalyzer();
+    const nowPlaying = {
+      playing: true,
+      title: 'Test Track',
+      artist: 'Tester',
+      album: 'Test Album',
+      sourceApp: 'test',
+      updatedAt: 1000,
+      levels: [1, 1, 1, 1],
+    };
+
+    let snap60 = analyzer60.step(1 / 60, 'auto', nowPlaying, true);
+    const firstBandsRef = snap60.bands;
+    for (let i = 1; i < 6; i += 1) {
+      snap60 = analyzer60.step(1 / 60, 'auto', nowPlaying, true);
+    }
+    expect(snap60.bands).toBe(firstBandsRef);
+
+    let snap240 = analyzer240.step(1 / 240, 'auto', nowPlaying, true);
+    for (let i = 1; i < 24; i += 1) {
+      snap240 = analyzer240.step(1 / 240, 'auto', nowPlaying, true);
+    }
+
+    // After 0.1s at 60Hz vs 240Hz, band levels match closely
+    expect(snap240.bands[0]).toBeCloseTo(snap60.bands[0]!, 4);
   });
 });

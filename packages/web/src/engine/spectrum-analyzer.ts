@@ -1,8 +1,8 @@
 import type { NowPlayingState, SpectrumAudioInput } from '@cathobar/shared';
 
 export interface SpectrumSnapshot {
-  bands: number[];
-  peaks: number[];
+  bands: ArrayLike<number>;
+  peaks: ArrayLike<number>;
   active: boolean;
 }
 
@@ -12,6 +12,11 @@ export class SpectrumAnalyzer {
   private readonly bands = new Float32Array(BAND_COUNT);
   private readonly peaks = new Float32Array(BAND_COUNT);
   private readonly peakHold = new Float32Array(BAND_COUNT);
+  private readonly snapshot: SpectrumSnapshot = {
+    bands: this.bands,
+    peaks: this.peaks,
+    active: false,
+  };
   private audioCtx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private micStream: MediaStream | null = null;
@@ -58,11 +63,8 @@ export class SpectrumAnalyzer {
         const target = Math.min(1, sum / ((end - start) * 255));
         this.applyBandTarget(b, target, clampedDt);
       }
-      return {
-        bands: Array.from(this.bands),
-        peaks: Array.from(this.peaks),
-        active: true,
-      };
+      this.snapshot.active = true;
+      return this.snapshot;
     }
 
     if (hasExternalLevels && nowPlaying?.levels) {
@@ -71,11 +73,8 @@ export class SpectrumAnalyzer {
         const idx = Math.min(levels.length - 1, Math.floor((b / BAND_COUNT) * levels.length));
         this.applyBandTarget(b, levels[idx] ?? 0, clampedDt);
       }
-      return {
-        bands: Array.from(this.bands),
-        peaks: Array.from(this.peaks),
-        active: true,
-      };
+      this.snapshot.active = true;
+      return this.snapshot;
     }
 
     // Rhythmic VFD-style synthesized equalizer when music is playing or synth mode is forced
@@ -95,11 +94,8 @@ export class SpectrumAnalyzer {
       this.applyBandTarget(b, target, clampedDt);
     }
 
-    return {
-      bands: Array.from(this.bands),
-      peaks: Array.from(this.peaks),
-      active,
-    };
+    this.snapshot.active = active;
+    return this.snapshot;
   }
 
   dispose(): void {
@@ -108,9 +104,10 @@ export class SpectrumAnalyzer {
 
   private applyBandTarget(band: number, target: number, dtSec: number): void {
     const prev = this.bands[band] ?? 0;
+    const attackAlpha = 1 - Math.exp(-24 * dtSec);
     const next =
       target >= prev
-        ? prev + (target - prev) * Math.min(1, dtSec * 24)
+        ? prev + (target - prev) * attackAlpha
         : Math.max(target, prev - dtSec * 1.9);
     this.bands[band] = Math.max(0, Math.min(1, next));
 

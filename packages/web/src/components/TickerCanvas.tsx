@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import type {
   ActivityBucket,
   AppConfig,
@@ -26,7 +26,7 @@ interface TickerCanvasProps {
   className?: string;
 }
 
-export function TickerCanvas({
+export const TickerCanvas = memo(function TickerCanvas({
   config,
   items,
   lastBatch,
@@ -45,26 +45,40 @@ export function TickerCanvas({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<TickerEngine | null>(null);
   const lastBootTokenRef = useRef(0);
+  const didMountSyncRef = useRef(false);
   const onStatsRef = useRef(onStats);
   onStatsRef.current = onStats;
+  const onEngineReadyRef = useRef(onEngineReady);
+  onEngineReadyRef.current = onEngineReady;
+  const latestPropsRef = useRef({
+    config,
+    items,
+    activity,
+    nowPlaying,
+    sensors,
+    lanUrls,
+  });
+  latestPropsRef.current = { config, items, activity, nowPlaying, sensors, lanUrls };
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const engine = new TickerEngine(canvas, config, (stats) => {
+    const engine = new TickerEngine(canvas, latestPropsRef.current.config, (stats) => {
       onStatsRef.current?.(stats);
     });
     engineRef.current = engine;
-    onEngineReady?.(engine);
+    onEngineReadyRef.current?.(engine);
 
+    const latest = latestPropsRef.current;
     const rect = canvas.getBoundingClientRect();
     engine.setViewportSize(rect.width, rect.height);
     engine.setTransparent(transparent);
     engine.setPaused(paused);
-    engine.updateLanUrls(lanUrls);
-    engine.syncState(items, activity, config, nowPlaying, sensors);
+    engine.updateLanUrls(latest.lanUrls);
+    engine.syncState(latest.items, latest.activity, latest.config, latest.nowPlaying, latest.sensors);
     engine.start();
+    didMountSyncRef.current = true;
 
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -78,7 +92,8 @@ export function TickerCanvas({
       ro.disconnect();
       engine.stop();
       engineRef.current = null;
-      onEngineReady?.(null);
+      didMountSyncRef.current = false;
+      onEngineReadyRef.current?.(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -92,14 +107,9 @@ export function TickerCanvas({
   }, [paused]);
 
   useEffect(() => {
-    engineRef.current?.syncState(items, activity, config, nowPlaying, sensors);
-  }, [config, items, activity, nowPlaying, sensors]);
-
-  useEffect(() => {
-    if (lastBatch.length > 0) {
-      engineRef.current?.pushItems(lastBatch);
-    }
-  }, [lastBatch]);
+    if (!didMountSyncRef.current) return;
+    engineRef.current?.updateConfigAndItems(items, config);
+  }, [config, items]);
 
   useEffect(() => {
     engineRef.current?.updateActivity(activity);
@@ -123,13 +133,20 @@ export function TickerCanvas({
     if (bootEvent.isInitial && disableAutoBoot) return;
     const engine = engineRef.current;
     if (!engine) return;
-    engine.updateLanUrls(lanUrls);
-    engine.syncState(items, activity, config, nowPlaying, sensors);
+    const latest = latestPropsRef.current;
+    engine.updateLanUrls(latest.lanUrls);
+    engine.syncState(latest.items, latest.activity, latest.config, latest.nowPlaying, latest.sensors);
     engine.triggerBootSequence({
       mode: bootEvent.mode,
       glyphStyle: bootEvent.glyphStyle,
     });
-  }, [bootEvent, disableAutoBoot, config, lanUrls, items, activity, nowPlaying, sensors]);
+  }, [bootEvent, disableAutoBoot]);
+
+  useEffect(() => {
+    if (lastBatch.length > 0) {
+      engineRef.current?.pushItems(lastBatch);
+    }
+  }, [lastBatch]);
 
   return (
     <canvas
@@ -137,4 +154,4 @@ export function TickerCanvas({
       className={`block h-full w-full ${transparent ? 'bg-transparent' : 'bg-black'} ${className}`}
     />
   );
-}
+});
