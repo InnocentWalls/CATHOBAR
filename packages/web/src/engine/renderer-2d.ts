@@ -16,6 +16,7 @@ import {
   drawFullScreenClockShowcase,
   drawTallBreakingAlert,
 } from './board-renderer.js';
+import { drawBootSequence, type ActiveBootSequence } from './boot-sequence.js';
 import { drawPixelIcon, resolveItemIcon } from './pixel-icons.js';
 import type { SpectrumSnapshot } from './spectrum-analyzer.js';
 import {
@@ -142,6 +143,7 @@ export class Renderer2D {
     sensors?: SensorReading[];
     spectrum: SpectrumSnapshot | null;
     breakingAlert: ActiveBreakingAlert | null;
+    bootSequence?: ActiveBootSequence | null;
     now: Date;
     transparent?: boolean;
     blackout?: boolean;
@@ -163,6 +165,7 @@ export class Renderer2D {
       sensors = [],
       spectrum,
       breakingAlert,
+      bootSequence = null,
       now,
       transparent = false,
       blackout = false,
@@ -197,6 +200,20 @@ export class Renderer2D {
       } else {
         this.drawBreakingAlert(ctx, display, breakingAlert);
       }
+      ctx.restore();
+      return;
+    }
+
+    if (bootSequence) {
+      drawBootSequence({
+        ctx,
+        width: this.width,
+        height: this.height,
+        display,
+        boot: bootSequence,
+        now,
+        transparent,
+      });
       ctx.restore();
       return;
     }

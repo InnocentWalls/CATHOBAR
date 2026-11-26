@@ -4,5 +4,6 @@ data/config.json
 .env
 .env.*
 *.log
+*.tsbuildinfo
 .DS_Store
 Thumbs.db

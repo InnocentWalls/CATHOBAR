@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  BOOT_SEQUENCE_MODE_LABELS,
   CHANNEL_LABELS,
   LAYOUT_MODE_LABELS,
   RESOLUTION_PRESETS,
@@ -7,6 +8,7 @@ import {
   SHINKANSEN_STYLE_LABELS,
   VFD_PALETTES,
   VISUAL_MODE_LABELS,
+  type BootSequenceMode,
   type ChannelId,
   type LayoutMode,
   type ScreenLayoutMode,
@@ -14,9 +16,9 @@ import {
   type VfdPalette,
   type VisualMode,
 } from '@cathobar/shared';
-import { AlertTriangle, Flame, SlidersHorizontal, Sparkles, Tv } from 'lucide-react';
+import { AlertTriangle, Flame, Play, SlidersHorizontal, Sparkles, Tv } from 'lucide-react';
 import { TickerCanvas } from '../components/TickerCanvas.js';
-import type { EngineStats } from '../engine/ticker-engine.js';
+import type { EngineStats, TickerEngine } from '../engine/ticker-engine.js';
 import { useCathobar } from '../hooks/useCathobar.js';
 
 export function DebugPage() {
@@ -26,8 +28,10 @@ export function DebugPage() {
     items,
     lastBatch,
     activity,
+    lanUrls,
     nowPlaying,
     sensors,
+    bootEvent,
     updateConfig,
     pushMessage,
   } = useCathobar();
@@ -39,6 +43,7 @@ export function DebugPage() {
   const [containerW, setContainerW] = useState(1100);
   const [stats, setStats] = useState<EngineStats | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const engineRef = useRef<TickerEngine | null>(null);
 
   useEffect(() => {
     const el = stageRef.current;
@@ -258,8 +263,13 @@ export function DebugPage() {
                 activity={activity}
                 nowPlaying={nowPlaying}
                 sensors={sensors}
+                lanUrls={lanUrls}
+                bootEvent={bootEvent}
                 transparent={transparentPreview}
                 onStats={setStats}
+                onEngineReady={(eng) => {
+                  engineRef.current = eng;
+                }}
               />
             </div>
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 font-mono text-[11px] text-slate-400">
@@ -445,6 +455,36 @@ export function DebugPage() {
                 </option>
               ))}
             </select>
+
+            <select
+              value={config.display.bootSequenceMode}
+              onChange={(e) => {
+                const mode = e.target.value as BootSequenceMode;
+                void updateConfig({ display: { bootSequenceMode: mode } });
+                if (mode !== 'off') {
+                  engineRef.current?.triggerBootSequence({ mode });
+                } else {
+                  engineRef.current?.cancelBootSequence();
+                }
+              }}
+              className="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-fuchsia-200"
+              title="起動演出モード"
+            >
+              {(Object.keys(BOOT_SEQUENCE_MODE_LABELS) as BootSequenceMode[]).map((bm) => (
+                <option key={bm} value={bm}>
+                  起動演出: {BOOT_SEQUENCE_MODE_LABELS[bm].label}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="button"
+              onClick={() => engineRef.current?.triggerBootSequence()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-fuchsia-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-fuchsia-400"
+            >
+              <Play className="h-3.5 w-3.5" />
+              起動演出テスト
+            </button>
 
             <button
               type="button"

@@ -1,5 +1,8 @@
 import type {
   AppConfig,
+  BootGlyphStyle,
+  BootMessageMode,
+  BootSequenceMode,
   ChannelId,
   LayoutMode,
   MarketSymbolConfig,
@@ -107,6 +110,12 @@ export const DEFAULT_CONFIG: AppConfig = {
     breakingAlertVolume: 0.5,
     showSpectrumAnalyzer: true,
     spectrumAudioInput: 'auto',
+    bootSequenceMode: 'auto',
+    bootGlyphStyle: 'circuit',
+    bootDecodeScan: true,
+    bootMessageMode: 'dynamic',
+    bootCustomMessage: '',
+    bootDurationSec: 9,
   },
   nightMode: {
     enabled: false,
@@ -322,6 +331,79 @@ export const VISUAL_MODE_LABELS: Record<VisualMode, { label: string; description
   clean: {
     label: 'クリーン (モダン表示)',
     description: 'ドット加工を抑えた高精細・高視認性モード',
+  },
+};
+
+export const BOOT_SEQUENCE_MODE_LABELS: Record<
+  BootSequenceMode,
+  { label: string; short: string; description: string }
+> = {
+  auto: {
+    label: '自動 (表示モード連動)',
+    short: 'AUTO',
+    description: 'VFD/FED/Cleanは暗号グリフ、新幹線/発車標はLEDテスト、パタパタは一斉回転を自動選択',
+  },
+  'glyph-circuit': {
+    label: '回路パターン・16セグ (左→右)',
+    short: 'CIRCUIT',
+    description: 'プリント基板配線＋端点パッド風の独自幾何学グリフでブート暗号を流す',
+  },
+  'glyph-oscilloscope': {
+    label: '陰極線オシロスコープ (左→右)',
+    short: 'SCOPE',
+    description: '電子ビームの一筆書き波形・輝点ベクター文字でブート暗号を流す',
+  },
+  'glyph-hex': {
+    label: 'ハニカム六角格子 (左→右)',
+    short: 'HEX',
+    description: '二段六角形メッシュの辺で構成されたオリジナル幾何学文字で流す',
+  },
+  'led-test': {
+    label: '3色LEDテスト＆試運転',
+    short: 'LED-CHK',
+    description: '緑→橙→赤の全素子スキャン＆ドット検査後に [試運転] 診断表示を行う',
+  },
+  'flap-cascade': {
+    label: 'パタパタ一斉回転',
+    short: 'FLAP',
+    description: '全メカニカルフラップが一斉に回転して起動メッセージへ揃う儀式',
+  },
+  off: {
+    label: 'OFF (通常ティッカーのみ)',
+    short: 'OFF',
+    description: '専用ブート演出をスキップし、従来の軽量な接続通知のみ流す',
+  },
+};
+
+export const BOOT_GLYPH_STYLE_LABELS: Record<
+  BootGlyphStyle,
+  { label: string; description: string }
+> = {
+  circuit: {
+    label: '回路 / 16セグメント',
+    description: 'PCB配線とハンダパッド風のシャープな幾何学文字',
+  },
+  oscilloscope: {
+    label: '陰極線オシロ',
+    description: '電子ビームの微振動と輝点を持つベクター文字',
+  },
+  hex: {
+    label: 'ハニカム格子',
+    description: '六角形グリッドの辺だけで構成した幾何学文字',
+  },
+};
+
+export const BOOT_MESSAGE_MODE_LABELS: Record<
+  BootMessageMode,
+  { label: string; description: string }
+> = {
+  dynamic: {
+    label: '動的 POST ログ',
+    description: 'LAN IP・稼働ソース数・現在時刻を含むシステム起動情報を自動生成',
+  },
+  custom: {
+    label: 'カスタムメッセージ',
+    description: '下の入力欄で指定した任意の文字列（英数字は幾何学グリフ化）を流す',
   },
 };
 

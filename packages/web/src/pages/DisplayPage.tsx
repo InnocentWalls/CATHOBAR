@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BOOT_SEQUENCE_MODE_LABELS,
+  BootSequenceModeSchema,
   CHANNEL_LABELS,
   ChannelIdSchema,
   LAYOUT_MODE_LABELS,
@@ -8,6 +10,7 @@ import {
   VFD_PALETTES,
   VISUAL_MODE_LABELS,
   VisualModeSchema,
+  type BootSequenceMode,
   type ChannelId,
   type LayoutMode,
   type ScreenLayoutMode,
@@ -45,23 +48,45 @@ const MODE_ORDER: VisualMode[] = [
 const PALETTE_ORDER: VfdPalette[] = ['cyan', 'green', 'white', 'amber'];
 const LAYOUT_ORDER: LayoutMode[] = ['auto', 'lanes', 'danmaku'];
 const SCREEN_LAYOUT_ORDER: ScreenLayoutMode[] = ['auto', 'board', 'wall', 'bar'];
+const BOOT_MODE_ORDER: BootSequenceMode[] = [
+  'auto',
+  'glyph-circuit',
+  'glyph-oscilloscope',
+  'glyph-hex',
+  'led-test',
+  'flap-cascade',
+  'off',
+];
 
 export function DisplayPage() {
-  const { connected, config, items, lastBatch, activity, lanUrls, nowPlaying, sensors, updateConfig } =
-    useCathobar();
+  const {
+    connected,
+    config,
+    items,
+    lastBatch,
+    activity,
+    lanUrls,
+    nowPlaying,
+    sensors,
+    bootEvent,
+    updateConfig,
+  } = useCathobar();
 
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const isTransparent = urlParams.get('transparent') === '1' || urlParams.get('transparent') === 'true';
   const hideHudForever = urlParams.get('hideHud') === '1';
+  const disableAutoBoot = urlParams.get('noBoot') === '1';
 
   const effectiveConfig = useMemo(() => {
     const chParam = urlParams.get('channel');
     const modeParam = urlParams.get('mode');
     const screenParam = urlParams.get('screen');
+    const bootParam = urlParams.get('boot');
     const chOk = chParam ? ChannelIdSchema.safeParse(chParam) : null;
     const modeOk = modeParam ? VisualModeSchema.safeParse(modeParam) : null;
     const screenOk = screenParam ? ScreenLayoutModeSchema.safeParse(screenParam) : null;
-    if (!chOk?.success && !modeOk?.success && !screenOk?.success) return config;
+    const bootOk = bootParam ? BootSequenceModeSchema.safeParse(bootParam) : null;
+    if (!chOk?.success && !modeOk?.success && !screenOk?.success && !bootOk?.success) return config;
     return {
       ...config,
       activeChannel: chOk?.success ? chOk.data : config.activeChannel,
@@ -69,6 +94,7 @@ export function DisplayPage() {
         ...config.display,
         ...(modeOk?.success ? { visualMode: modeOk.data } : {}),
         ...(screenOk?.success ? { screenLayout: screenOk.data } : {}),
+        ...(bootOk?.success ? { bootSequenceMode: bootOk.data } : {}),
       },
     };
   }, [config, urlParams]);
@@ -177,6 +203,19 @@ export function DisplayPage() {
           display: { showSpectrumAnalyzer: !config.display.showSpectrumAnalyzer },
         });
         showHudTemporarily();
+      } else if (key === 'b' && e.shiftKey) {
+        const curIdx = BOOT_MODE_ORDER.indexOf(config.display.bootSequenceMode);
+        const nextBoot = BOOT_MODE_ORDER[(curIdx + 1) % BOOT_MODE_ORDER.length]!;
+        void updateConfig({ display: { bootSequenceMode: nextBoot } });
+        if (nextBoot !== 'off') {
+          engineRef.current?.triggerBootSequence({ mode: nextBoot });
+        } else {
+          engineRef.current?.cancelBootSequence();
+        }
+        showHudTemporarily();
+      } else if (key === 'b') {
+        engineRef.current?.triggerBootSequence();
+        showHudTemporarily();
       } else if (key === 'h') {
         setHudVisible((v) => !v);
       } else if (key === 'f') {
@@ -210,6 +249,9 @@ export function DisplayPage() {
         activity={activity}
         nowPlaying={nowPlaying}
         sensors={sensors}
+        lanUrls={lanUrls}
+        bootEvent={bootEvent}
+        disableAutoBoot={disableAutoBoot}
         transparent={isTransparent}
         paused={paused}
         onStats={setStats}
@@ -332,6 +374,28 @@ export function DisplayPage() {
               className="rounded bg-slate-800 px-2 py-0.5 text-cyan-300 hover:bg-slate-700"
             >
               V: {VISUAL_MODE_LABELS[config.display.visualMode].label}
+            </button>
+
+            <button
+              type="button"
+              onClick={(e) => {
+                if (e.shiftKey) {
+                  const curIdx = BOOT_MODE_ORDER.indexOf(config.display.bootSequenceMode);
+                  const nextBoot = BOOT_MODE_ORDER[(curIdx + 1) % BOOT_MODE_ORDER.length]!;
+                  void updateConfig({ display: { bootSequenceMode: nextBoot } });
+                  if (nextBoot !== 'off') {
+                    engineRef.current?.triggerBootSequence({ mode: nextBoot });
+                  } else {
+                    engineRef.current?.cancelBootSequence();
+                  }
+                } else {
+                  engineRef.current?.triggerBootSequence();
+                }
+              }}
+              className="rounded bg-slate-800 px-2 py-0.5 text-fuchsia-300 hover:bg-slate-700"
+              title="B: 起動演出を再生 / Shift+B: ブートモード切替"
+            >
+              B: {BOOT_SEQUENCE_MODE_LABELS[config.display.bootSequenceMode].short}
             </button>
 
             {config.display.visualMode === 'anobar8-vfd' && (

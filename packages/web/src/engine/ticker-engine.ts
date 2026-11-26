@@ -3,6 +3,8 @@ import {
   isItemEnabledBySources,
   type ActivityBucket,
   type AppConfig,
+  type BootGlyphStyle,
+  type BootSequenceMode,
   type ChannelId,
   type NowPlayingState,
   type SensorReading,
@@ -10,6 +12,7 @@ import {
 } from '@cathobar/shared';
 import { playBreakingAlertChime, resolveAlertSoundKind } from './alert-audio.js';
 import { computeScreenRegions } from './board-renderer.js';
+import { createBootSequence, type ActiveBootSequence } from './boot-sequence.js';
 import { Renderer2D, type ActiveBreakingAlert } from './renderer-2d.js';
 import { RendererGL } from './renderer-gl.js';
 import { SpectrumAnalyzer } from './spectrum-analyzer.js';
@@ -33,6 +36,7 @@ export interface EngineStats {
   rotating: boolean;
   nightActive: boolean;
   paused: boolean;
+  booting: boolean;
   backend: 'webgl2' | 'canvas2d';
 }
 
@@ -50,6 +54,8 @@ export class TickerEngine {
   private sensors: SensorReading[] = [];
   private breakingQueue: TickerItem[] = [];
   private activeBreaking: ActiveBreakingAlert | null = null;
+  private activeBoot: ActiveBootSequence | null = null;
+  private lanUrls: string[] = [];
   private lastEffectiveChannel: ChannelId;
   private lastEffectiveScreenLayout: EffectiveScreenLayout = 'bar';
   private rafId: number | null = null;
@@ -177,6 +183,26 @@ export class TickerEngine {
     this.sensors = sensors;
   }
 
+  updateLanUrls(lanUrls: string[]): void {
+    this.lanUrls = lanUrls;
+  }
+
+  triggerBootSequence(override?: { mode?: BootSequenceMode; glyphStyle?: BootGlyphStyle }): void {
+    const enabledSourceCount = Object.values(this.config.sources).filter((s) => s.enabled).length;
+    this.activeBoot = createBootSequence({
+      modeOverride: override?.mode,
+      glyphStyleOverride: override?.glyphStyle,
+      display: this.config.display,
+      lanUrls: this.lanUrls,
+      enabledSourceCount,
+      now: new Date(),
+    });
+  }
+
+  cancelBootSequence(): void {
+    this.activeBoot = null;
+  }
+
   start(): void {
     if (this.rafId !== null) return;
     this.lastFrameMs = performance.now();
@@ -237,6 +263,13 @@ export class TickerEngine {
       this.activeBreaking.elapsedSec += clampedDt;
       if (this.activeBreaking.elapsedSec >= this.activeBreaking.durationSec) {
         this.activeBreaking = null;
+      }
+    }
+
+    if (this.activeBoot && !this.activeBreaking && !this.paused) {
+      this.activeBoot.elapsedSec += clampedDt;
+      if (this.activeBoot.elapsedSec >= this.activeBoot.durationSec) {
+        this.activeBoot = null;
       }
     }
 
@@ -323,7 +356,10 @@ export class TickerEngine {
         : display.scrollSpeed;
 
     const spans =
-      skipTickerStep || this.activeBreaking || (night.blackout && !this.activeBreaking)
+      skipTickerStep ||
+      this.activeBreaking ||
+      this.activeBoot ||
+      (night.blackout && !this.activeBreaking)
         ? []
         : this.layout.step({
             dtSec: clampedDt,
@@ -360,6 +396,7 @@ export class TickerEngine {
       sensors: this.sensors,
       spectrum: spectrumSnapshot,
       breakingAlert: this.activeBreaking,
+      bootSequence: this.activeBoot,
       now: nowDate,
       transparent: this.transparent,
       blackout: night.blackout,
@@ -420,6 +457,7 @@ export class TickerEngine {
         rotating: rotState.rotating && !night.clockOnly,
         nightActive: night.active,
         paused: this.paused,
+        booting: Boolean(this.activeBoot),
         backend: this.rendererGl ? 'webgl2' : 'canvas2d',
       });
     }

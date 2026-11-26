@@ -16,6 +16,7 @@ async function main(): Promise<void> {
   const port = Number(process.env.PORT ?? 3000);
   const host = process.env.HOST ?? '0.0.0.0';
   const configPath = process.env.CATHOBAR_CONFIG ?? defaultDataPath;
+  const authToken = process.env.CATHOBAR_TOKEN?.trim() || undefined;
 
   const store = new ConfigStore(configPath);
   const hub = new TickerHub(store);
@@ -24,6 +25,7 @@ async function main(): Promise<void> {
 
   const app = createApp(hub, {
     staticDir: existsSync(webDistDir) ? webDistDir : undefined,
+    authToken,
   });
 
   const server = serve({
@@ -52,6 +54,9 @@ async function main(): Promise<void> {
   console.log(`  Debug sim     : http://localhost:${port}/debug`);
   for (const lanUrl of hub.getLanUrls()) {
     console.log(`  LAN Admin UI  : ${lanUrl}/admin`);
+  }
+  if (authToken) {
+    console.log('  Auth          : enabled (CATHOBAR_TOKEN)');
   }
 
   const shutdown = () => {

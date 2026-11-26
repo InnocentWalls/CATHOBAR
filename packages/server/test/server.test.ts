@@ -1168,3 +1168,269 @@ describe('Additional improvements & new sources & APIs', () => {
     hub.stop();
   });
 });
+
+describe('Opt-in API authentication (CATHOBAR_TOKEN)', () => {
+  it('allows all operations when authToken is not configured', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cathobar-noauth-'));
+    tempDirs.push(dir);
+    const store = new ConfigStore(join(dir, 'config.json'));
+    const hub = new TickerHub(store);
+    await hub.init();
+    const app = createApp(hub);
+
+    const health = await app.request('/api/health');
+    expect(health.status).toBe(200);
+    expect(await health.json()).toMatchObject({ ok: true, authRequired: false });
+
+    const status = await app.request('/api/auth/status');
+    expect(status.status).toBe(200);
+    expect(await status.json()).toEqual({ authRequired: false, authenticated: true });
+
+    const push = await app.request('/api/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: '公開LANモード通知' }),
+    });
+    expect(push.status).toBe(201);
+  });
+
+  it('protects write/export/webhook endpoints while keeping read-only display APIs open', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cathobar-auth-'));
+    tempDirs.push(dir);
+    const store = new ConfigStore(join(dir, 'config.json'));
+    const hub = new TickerHub(store);
+    await hub.init();
+    const app = createApp(hub, { authToken: 'my-secret-token' });
+
+    const health = await app.request('/api/health');
+    expect(health.status).toBe(200);
+    expect(await health.json()).toMatchObject({ ok: true, authRequired: true });
+
+    // Auth status checks
+    const unauthStatus = await app.request('/api/auth/status');
+    expect(await unauthStatus.json()).toEqual({ authRequired: true, authenticated: false });
+
+    const bearerStatus = await app.request('/api/auth/status', {
+      headers: { Authorization: 'Bearer my-secret-token' },
+    });
+    expect(await bearerStatus.json()).toEqual({ authRequired: true, authenticated: true });
+
+    const headerStatus = await app.request('/api/auth/status', {
+      headers: { 'X-Cathobar-Token': 'my-secret-token' },
+    });
+    expect(await headerStatus.json()).toEqual({ authRequired: true, authenticated: true });
+
+    const queryStatus = await app.request('/api/auth/status?token=my-secret-token');
+    expect(await queryStatus.json()).toEqual({ authRequired: true, authenticated: true });
+
+    // Read-only display endpoints stay accessible
+    expect((await app.request('/api/state')).status).toBe(200);
+    expect((await app.request('/api/history')).status).toBe(200);
+    expect((await app.request('/api/sensors')).status).toBe(200);
+    expect((await app.request('/api/transit/lines')).status).toBe(200);
+
+    // Protected endpoints reject missing or wrong tokens
+    const protectedRequests: Array<[string, RequestInit?]> = [
+      ['/api/config/export'],
+      ['/api/config/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }],
+      ['/api/config', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' }],
+      ['/api/scenes/train-news/apply', { method: 'POST' }],
+      ['/api/push', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"text":"x"}' }],
+      [
+        '/api/now-playing',
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"playing":false}' },
+      ],
+      [
+        '/api/sensors',
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"id":"s1","name":"S1"}' },
+      ],
+      ['/api/sources/rss/refresh', { method: 'POST' }],
+      [
+        '/api/webhook/generic',
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"text":"hi"}' },
+      ],
+    ];
+
+    for (const [path, init] of protectedRequests) {
+      const noTok = await app.request(path, init);
+      expect(noTok.status, `expected 401 without token on ${path}`).toBe(401);
+
+      const badHeaders = new Headers(init?.headers);
+      badHeaders.set('X-Cathobar-Token', 'wrong-token');
+      const badTok = await app.request(path, { ...init, headers: badHeaders });
+      expect(badTok.status, `expected 401 with wrong token on ${path}`).toBe(401);
+    }
+
+    // Valid token succeeds across protected routes
+    const authedExport = await app.request('/api/config/export', {
+      headers: { 'X-Cathobar-Token': 'my-secret-token' },
+    });
+    expect(authedExport.status).toBe(200);
+
+    const authedPatch = await app.request('/api/config', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer my-secret-token',
+      },
+      body: JSON.stringify({ display: { vfdPalette: 'green' } }),
+    });
+    expect(authedPatch.status).toBe(200);
+
+    const authedPush = await app.request('/api/push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cathobar-Token': 'my-secret-token',
+      },
+      body: JSON.stringify({ text: '認証済みPush' }),
+    });
+    expect(authedPush.status).toBe(201);
+
+    const authedScene = await app.request('/api/scenes/train-news/apply', {
+      method: 'POST',
+      headers: { 'X-Cathobar-Token': 'my-secret-token' },
+    });
+    expect(authedScene.status).toBe(200);
+
+    const authedNp = await app.request('/api/now-playing', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cathobar-Token': 'my-secret-token',
+      },
+      body: JSON.stringify({ playing: true, title: 'Song', artist: 'Artist' }),
+    });
+    expect(authedNp.status).toBe(201);
+
+    const authedSensor = await app.request('/api/sensors', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cathobar-Token': 'my-secret-token',
+      },
+      body: JSON.stringify({ id: 'room', name: '書斎', temperature: 23.5 }),
+    });
+    expect(authedSensor.status).toBe(201);
+
+    const authedImport = await app.request('/api/config/import', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cathobar-Token': 'my-secret-token',
+      },
+      body: JSON.stringify(hub.getConfig()),
+    });
+    expect(authedImport.status).toBe(200);
+
+    // Webhook fallback uses authToken when webhook.secret is empty
+    const authedWebhook = await app.request('/api/webhook/generic', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cathobar-Token': 'my-secret-token',
+      },
+      body: JSON.stringify({ text: 'Webhook with CATHOBAR_TOKEN' }),
+    });
+    expect(authedWebhook.status).toBe(201);
+
+    // When webhook.secret is set, webhook uses webhook.secret instead of global authToken
+    await hub.updateConfig({ sources: { webhook: { enabled: true, secret: 'hook-only-secret' } } });
+    const wrongForHook = await app.request('/api/webhook/generic', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cathobar-Token': 'my-secret-token',
+      },
+      body: JSON.stringify({ text: 'Should fail' }),
+    });
+    expect(wrongForHook.status).toBe(401);
+
+    const okForHook = await app.request('/api/webhook/generic', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cathobar-Token': 'hook-only-secret',
+      },
+      body: JSON.stringify({ text: 'Should succeed' }),
+    });
+    expect(okForHook.status).toBe(201);
+  });
+});
+
+describe('Boot sequence configuration & /api/boot/replay', () => {
+  it('persists all boot sequence display fields in ConfigStore and supports /api/boot/replay', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cathobar-boot-'));
+    tempDirs.push(dir);
+    const configFile = join(dir, 'config.json');
+
+    const store = new ConfigStore(configFile);
+    const initial = await store.load();
+    expect(initial.display.bootSequenceMode).toBe('auto');
+    expect(initial.display.bootGlyphStyle).toBe('circuit');
+    expect(initial.display.bootDecodeScan).toBe(true);
+    expect(initial.display.bootMessageMode).toBe('dynamic');
+    expect(initial.display.bootCustomMessage).toBe('');
+    expect(initial.display.bootDurationSec).toBe(9);
+
+    const hub = new TickerHub(store);
+    await hub.init();
+    const app = createApp(hub);
+
+    // Patch all boot fields via API
+    const patchRes = await app.request('/api/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        display: {
+          bootSequenceMode: 'glyph-oscilloscope',
+          bootGlyphStyle: 'hex',
+          bootDecodeScan: false,
+          bootMessageMode: 'custom',
+          bootCustomMessage: 'CATHOBAR // TEST',
+          bootDurationSec: 14,
+        },
+      }),
+    });
+    expect(patchRes.status).toBe(200);
+
+    const reloaded = await new ConfigStore(configFile).load();
+    expect(reloaded.display.bootSequenceMode).toBe('glyph-oscilloscope');
+    expect(reloaded.display.bootGlyphStyle).toBe('hex');
+    expect(reloaded.display.bootDecodeScan).toBe(false);
+    expect(reloaded.display.bootMessageMode).toBe('custom');
+    expect(reloaded.display.bootCustomMessage).toBe('CATHOBAR // TEST');
+    expect(reloaded.display.bootDurationSec).toBe(14);
+
+    // Replay with empty body
+    const emptyReplay = await app.request('/api/boot/replay', { method: 'POST' });
+    expect(emptyReplay.status).toBe(200);
+    const emptyJson = (await emptyReplay.json()) as { ok: boolean; timestamp: number };
+    expect(emptyJson.ok).toBe(true);
+    expect(typeof emptyJson.timestamp).toBe('number');
+
+    // Replay with explicit mode & glyphStyle
+    const explicitReplay = await app.request('/api/boot/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'glyph-hex', glyphStyle: 'hex' }),
+    });
+    expect(explicitReplay.status).toBe(200);
+    const explicitJson = (await explicitReplay.json()) as {
+      ok: boolean;
+      mode?: string;
+      glyphStyle?: string;
+    };
+    expect(explicitJson).toMatchObject({ ok: true, mode: 'glyph-hex', glyphStyle: 'hex' });
+
+    // Invalid replay mode returns 400
+    const badReplay = await app.request('/api/boot/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'nonexistent-mode' }),
+    });
+    expect(badReplay.status).toBe(400);
+
+    hub.stop();
+  });
+});

@@ -113,6 +113,36 @@ export type MastodonStreamType = z.infer<typeof MastodonStreamTypeSchema>;
 export const SpectrumAudioInputSchema = z.enum(['auto', 'mic', 'synth']);
 export type SpectrumAudioInput = z.infer<typeof SpectrumAudioInputSchema>;
 
+export const BootSequenceModeSchema = z.enum([
+  'auto',
+  'glyph-circuit',
+  'glyph-oscilloscope',
+  'glyph-hex',
+  'led-test',
+  'flap-cascade',
+  'off',
+]);
+export type BootSequenceMode = z.infer<typeof BootSequenceModeSchema>;
+
+export const BootGlyphStyleSchema = z.enum(['circuit', 'oscilloscope', 'hex']);
+export type BootGlyphStyle = z.infer<typeof BootGlyphStyleSchema>;
+
+export const BootMessageModeSchema = z.enum(['dynamic', 'custom']);
+export type BootMessageMode = z.infer<typeof BootMessageModeSchema>;
+
+export const BootReplayInputSchema = z.object({
+  mode: BootSequenceModeSchema.optional(),
+  glyphStyle: BootGlyphStyleSchema.optional(),
+});
+export type BootReplayInput = z.infer<typeof BootReplayInputSchema>;
+
+export const BootReplayPayloadSchema = z.object({
+  timestamp: z.number(),
+  mode: BootSequenceModeSchema.optional(),
+  glyphStyle: BootGlyphStyleSchema.optional(),
+});
+export type BootReplayPayload = z.infer<typeof BootReplayPayloadSchema>;
+
 export const DisplaySettingsSchema = z.object({
   visualMode: VisualModeSchema.default('anobar8-vfd'),
   vfdPalette: VfdPaletteSchema.default('cyan'),
@@ -142,6 +172,12 @@ export const DisplaySettingsSchema = z.object({
   breakingAlertVolume: z.number().min(0.05).max(1).default(0.5),
   showSpectrumAnalyzer: z.boolean().default(true),
   spectrumAudioInput: SpectrumAudioInputSchema.default('auto'),
+  bootSequenceMode: BootSequenceModeSchema.default('auto'),
+  bootGlyphStyle: BootGlyphStyleSchema.default('circuit'),
+  bootDecodeScan: z.boolean().default(true),
+  bootMessageMode: BootMessageModeSchema.default('dynamic'),
+  bootCustomMessage: z.string().max(240).default(''),
+  bootDurationSec: z.number().min(4).max(20).default(9),
 });
 export type DisplaySettings = z.infer<typeof DisplaySettingsSchema>;
 
@@ -545,5 +581,6 @@ export const WsMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('status:update'), payload: z.array(SourceStatusSchema) }),
   z.object({ type: z.literal('nowplaying:update'), payload: NowPlayingStateSchema.nullable() }),
   z.object({ type: z.literal('sensors:update'), payload: z.array(SensorReadingSchema) }),
+  z.object({ type: z.literal('boot:replay'), payload: BootReplayPayloadSchema }),
 ]);
 export type WsMessage = z.infer<typeof WsMessageSchema>;

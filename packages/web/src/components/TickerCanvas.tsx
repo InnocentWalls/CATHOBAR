@@ -7,6 +7,7 @@ import type {
   TickerItem,
 } from '@cathobar/shared';
 import { TickerEngine, type EngineStats } from '../engine/ticker-engine.js';
+import type { BootEvent } from '../hooks/useCathobar.js';
 
 interface TickerCanvasProps {
   config: AppConfig;
@@ -15,6 +16,9 @@ interface TickerCanvasProps {
   activity: ActivityBucket[];
   nowPlaying?: NowPlayingState | null;
   sensors?: SensorReading[];
+  lanUrls?: string[];
+  bootEvent?: BootEvent | null;
+  disableAutoBoot?: boolean;
   transparent?: boolean;
   paused?: boolean;
   onStats?: (stats: EngineStats) => void;
@@ -29,6 +33,9 @@ export function TickerCanvas({
   activity,
   nowPlaying = null,
   sensors = [],
+  lanUrls = [],
+  bootEvent = null,
+  disableAutoBoot = false,
   transparent = false,
   paused = false,
   onStats,
@@ -37,6 +44,7 @@ export function TickerCanvas({
 }: TickerCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<TickerEngine | null>(null);
+  const lastBootTokenRef = useRef(0);
   const onStatsRef = useRef(onStats);
   onStatsRef.current = onStats;
 
@@ -54,6 +62,7 @@ export function TickerCanvas({
     engine.setViewportSize(rect.width, rect.height);
     engine.setTransparent(transparent);
     engine.setPaused(paused);
+    engine.updateLanUrls(lanUrls);
     engine.syncState(items, activity, config, nowPlaying, sensors);
     engine.start();
 
@@ -103,6 +112,24 @@ export function TickerCanvas({
   useEffect(() => {
     engineRef.current?.updateSensors(sensors);
   }, [sensors]);
+
+  useEffect(() => {
+    engineRef.current?.updateLanUrls(lanUrls);
+  }, [lanUrls]);
+
+  useEffect(() => {
+    if (!bootEvent || bootEvent.token <= lastBootTokenRef.current) return;
+    lastBootTokenRef.current = bootEvent.token;
+    if (bootEvent.isInitial && disableAutoBoot) return;
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.updateLanUrls(lanUrls);
+    engine.syncState(items, activity, config, nowPlaying, sensors);
+    engine.triggerBootSequence({
+      mode: bootEvent.mode,
+      glyphStyle: bootEvent.glyphStyle,
+    });
+  }, [bootEvent, disableAutoBoot, config, lanUrls, items, activity, nowPlaying, sensors]);
 
   return (
     <canvas

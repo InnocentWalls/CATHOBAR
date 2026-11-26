@@ -1,10 +1,12 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { ZodError } from 'zod';
 import {
+  BootReplayInputSchema,
   NowPlayingPushInputSchema,
   PushMessageInputSchema,
   SensorPushInputSchema,
@@ -26,15 +28,49 @@ const MIME_TYPES: Record<string, string> = {
 
 export interface AppOptions {
   staticDir?: string;
+  authToken?: string;
+}
+
+function tokensEqual(a: string, b: string): boolean {
+  const hashA = createHash('sha256').update(a).digest();
+  const hashB = createHash('sha256').update(b).digest();
+  return timingSafeEqual(hashA, hashB);
+}
+
+function extractRequestToken(c: Context): string {
+  const auth = c.req.header('authorization') ?? '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (bearer) return bearer;
+  const headerToken = c.req.header('x-cathobar-token')?.trim() ?? '';
+  if (headerToken) return headerToken;
+  return c.req.query('token')?.trim() ?? '';
 }
 
 export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
   const app = new Hono();
+  const configuredToken = options.authToken?.trim() ?? '';
+  const isAuthorized = (c: Context): boolean => {
+    if (!configuredToken) return true;
+    const reqToken = extractRequestToken(c);
+    return Boolean(reqToken) && tokensEqual(reqToken, configuredToken);
+  };
 
   app.use('/api/*', cors());
 
   app.get('/api/health', (c) => {
-    return c.json({ ok: true, service: 'cathobar', timestamp: Date.now() });
+    return c.json({
+      ok: true,
+      service: 'cathobar',
+      timestamp: Date.now(),
+      authRequired: Boolean(configuredToken),
+    });
+  });
+
+  app.get('/api/auth/status', (c) => {
+    return c.json({
+      authRequired: Boolean(configuredToken),
+      authenticated: isAuthorized(c),
+    });
   });
 
   app.get('/api/state', (c) => {
@@ -50,6 +86,9 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
   });
 
   app.get('/api/config/export', (c) => {
+    if (!isAuthorized(c)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
     const json = `${JSON.stringify(hub.getConfig(), null, 2)}\n`;
     return new Response(json, {
       status: 200,
@@ -61,6 +100,9 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
   });
 
   app.post('/api/config/import', async (c) => {
+    if (!isAuthorized(c)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
     try {
       const body = await c.req.json();
       const updated = await hub.replaceConfig(body);
@@ -77,6 +119,9 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
   });
 
   app.patch('/api/config', async (c) => {
+    if (!isAuthorized(c)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
     try {
       const body = await c.req.json();
       const updated = await hub.updateConfig(body);
@@ -93,6 +138,9 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
   });
 
   app.post('/api/scenes/:id/apply', async (c) => {
+    if (!isAuthorized(c)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
     const id = c.req.param('id');
     const updated = await hub.applyScene(id);
     if (!updated) {
@@ -102,6 +150,9 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
   });
 
   app.post('/api/push', async (c) => {
+    if (!isAuthorized(c)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
     try {
       const body = await c.req.json();
       const parsed = PushMessageInputSchema.parse(body);
@@ -115,7 +166,28 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
     }
   });
 
+  app.post('/api/boot/replay', async (c) => {
+    if (!isAuthorized(c)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    try {
+      const rawText = await c.req.text();
+      const body = rawText.trim() ? (JSON.parse(rawText) as unknown) : {};
+      const parsed = BootReplayInputSchema.parse(body);
+      const payload = hub.triggerBootReplay(parsed);
+      return c.json({ ok: true, ...payload }, 200);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        return c.json({ error: 'Invalid boot replay payload', issues: err.issues }, 400);
+      }
+      return c.json({ error: 'Failed to parse JSON body' }, 400);
+    }
+  });
+
   app.post('/api/now-playing', async (c) => {
+    if (!isAuthorized(c)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
     try {
       const body = await c.req.json();
       const parsed = NowPlayingPushInputSchema.parse(body);
@@ -134,6 +206,9 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
   });
 
   app.post('/api/sensors', async (c) => {
+    if (!isAuthorized(c)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
     try {
       const body = await c.req.json();
       const parsed = SensorPushInputSchema.parse(body);
@@ -153,13 +228,10 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
       return c.json({ error: 'Webhook source is disabled' }, 403);
     }
 
-    if (whCfg.secret.trim()) {
-      const expected = whCfg.secret.trim();
-      const auth = c.req.header('authorization') ?? '';
-      const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-      const headerToken = c.req.header('x-cathobar-token')?.trim() ?? '';
-      const queryToken = c.req.query('token')?.trim() ?? '';
-      if (bearer !== expected && headerToken !== expected && queryToken !== expected) {
+    const expectedSecret = whCfg.secret.trim() || configuredToken;
+    if (expectedSecret) {
+      const reqToken = extractRequestToken(c);
+      if (!reqToken || !tokensEqual(reqToken, expectedSecret)) {
         return c.json({ error: 'Unauthorized webhook token' }, 401);
       }
     }
@@ -181,6 +253,9 @@ export function createApp(hub: TickerHub, options: AppOptions = {}): Hono {
   });
 
   app.post('/api/sources/:id/refresh', async (c) => {
+    if (!isAuthorized(c)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
     const idResult = TickerSourceIdSchema.safeParse(c.req.param('id'));
     if (!idResult.success) {
       return c.json({ error: 'Unknown source id' }, 404);

@@ -17,6 +17,7 @@ interface SystemTabProps {
   baseHost: string;
   updateConfig: (patch: PartialAppConfig) => Promise<void>;
   importConfig: (raw: unknown) => Promise<boolean>;
+  exportConfig: () => Promise<boolean>;
 }
 
 export function SystemTab({
@@ -26,6 +27,7 @@ export function SystemTab({
   baseHost,
   updateConfig,
   importConfig,
+  exportConfig,
 }: SystemTabProps) {
   const [muteInput, setMuteInput] = useState('');
   const [importMsg, setImportMsg] = useState<string | null>(null);
@@ -178,14 +180,18 @@ export function SystemTab({
         <div className="space-y-2.5 border-t border-slate-800 pt-4">
           <h2 className="text-sm font-semibold text-cyan-300">設定バックアップ・復元 (JSON)</h2>
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <a
-              href="/api/config/export"
-              download="cathobar-config.json"
+            <button
+              type="button"
+              onClick={() => {
+                void exportConfig().then((ok) => {
+                  if (!ok) setImportMsg('エクスポートに失敗しました（認証を確認してください）');
+                });
+              }}
               className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 font-medium text-slate-200 hover:bg-slate-700"
             >
               <Download className="h-3.5 w-3.5" />
               設定をエクスポート
-            </a>
+            </button>
             <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 font-medium text-slate-200 hover:border-cyan-400">
               <Upload className="h-3.5 w-3.5" />
               JSON をインポート

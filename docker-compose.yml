@@ -1,0 +1,12 @@
+services:
+  cathobar:
+    build: .
+    container_name: cathobar
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      TZ: ${TZ:-Asia/Tokyo}
+      CATHOBAR_TOKEN: ${CATHOBAR_TOKEN:-}

@@ -5,6 +5,8 @@ import {
   matchesMuteKeywords,
   type ActivityBucket,
   type AppConfig,
+  type BootReplayInput,
+  type BootReplayPayload,
   type NowPlayingPushInput,
   type NowPlayingState,
   type PartialAppConfig,
@@ -176,21 +178,23 @@ export class TickerHub {
   attachClient(ws: WebSocket): void {
     this.clients.add(ws);
     this.sendTo(ws, { type: 'init', payload: this.getState() });
-    this.sendTo(ws, {
-      type: 'item:new',
-      payload: {
-        id: `boot-oneshot-${Date.now()}`,
-        source: 'push',
-        badge: 'SYSTEM',
-        text: 'CATHOBAR 接続完了 — ANOBAR8 / ANOBAR モダンティッカーシステム稼働中',
-        color: '#38fad9',
-        timestamp: Date.now(),
-        priority: 'high',
-        oneShot: true,
-        breaking: false,
-        icon: 'info',
-      },
-    });
+    if (this.configStore.get().display.bootSequenceMode === 'off') {
+      this.sendTo(ws, {
+        type: 'item:new',
+        payload: {
+          id: `boot-oneshot-${Date.now()}`,
+          source: 'push',
+          badge: 'SYSTEM',
+          text: 'CATHOBAR 接続完了 — ANOBAR8 / ANOBAR モダンティッカーシステム稼働中',
+          color: '#38fad9',
+          timestamp: Date.now(),
+          priority: 'high',
+          oneShot: true,
+          breaking: false,
+          icon: 'info',
+        },
+      });
+    }
     ws.on('close', () => {
       this.clients.delete(ws);
     });
@@ -291,6 +295,16 @@ export class TickerHub {
     };
     this.handleIncomingItems([item]);
     return item;
+  }
+
+  triggerBootReplay(input?: BootReplayInput): BootReplayPayload {
+    const payload: BootReplayPayload = {
+      timestamp: Date.now(),
+      ...(input?.mode !== undefined ? { mode: input.mode } : {}),
+      ...(input?.glyphStyle !== undefined ? { glyphStyle: input.glyphStyle } : {}),
+    };
+    this.broadcast({ type: 'boot:replay', payload });
+    return payload;
   }
 
   pushNowPlaying(input: NowPlayingPushInput): NowPlayingState {

@@ -3,6 +3,9 @@ import {
   DEFAULT_CONFIG,
   type ActivityBucket,
   type AppConfig,
+  type BootGlyphStyle,
+  type BootReplayInput,
+  type BootSequenceMode,
   type NowPlayingPushInput,
   type NowPlayingState,
   type PartialAppConfig,
@@ -15,8 +18,39 @@ import {
   type WsMessage,
 } from '@cathobar/shared';
 
+export interface BootEvent {
+  token: number;
+  mode?: BootSequenceMode;
+  glyphStyle?: BootGlyphStyle;
+  isInitial?: boolean;
+}
+
+const AUTH_TOKEN_STORAGE_KEY = 'cathobar_auth_token';
+
+function readStoredToken(): string {
+  try {
+    return window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function writeStoredToken(token: string): void {
+  try {
+    if (token) {
+      window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
 export interface CathobarHookResult {
   connected: boolean;
+  authRequired: boolean;
+  authError: boolean;
   config: AppConfig;
   items: TickerItem[];
   lastBatch: TickerItem[];
@@ -26,10 +60,15 @@ export interface CathobarHookResult {
   lanUrls: string[];
   nowPlaying: NowPlayingState | null;
   sensors: SensorReading[];
+  bootEvent: BootEvent | null;
+  setAuthToken: (token: string) => Promise<boolean>;
+  clearAuthToken: () => void;
   updateConfig: (patch: PartialAppConfig) => Promise<void>;
   importConfig: (raw: unknown) => Promise<boolean>;
+  exportConfig: () => Promise<boolean>;
   applyScene: (sceneId: string) => Promise<void>;
   pushMessage: (input: PushMessageInput) => Promise<void>;
+  replayBoot: (input?: BootReplayInput) => Promise<void>;
   pushNowPlaying: (input: NowPlayingPushInput) => Promise<void>;
   pushSensor: (input: SensorPushInput) => Promise<void>;
   refreshSource: (id: TickerSourceId) => Promise<void>;
@@ -38,6 +77,8 @@ export interface CathobarHookResult {
 
 export function useCathobar(): CathobarHookResult {
   const [connected, setConnected] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authError, setAuthError] = useState(false);
   const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
   const [items, setItems] = useState<TickerItem[]>([]);
   const [lastBatch, setLastBatch] = useState<TickerItem[]>([]);
@@ -47,7 +88,69 @@ export function useCathobar(): CathobarHookResult {
   const [lanUrls, setLanUrls] = useState<string[]>([]);
   const [nowPlaying, setNowPlaying] = useState<NowPlayingState | null>(null);
   const [sensors, setSensors] = useState<SensorReading[]>([]);
+  const [bootEvent, setBootEvent] = useState<BootEvent | null>(null);
   const reconnectTimer = useRef<number | null>(null);
+  const bootTokenRef = useRef(0);
+  const hasInitialBootedRef = useRef(false);
+  const tokenRef = useRef<string>(readStoredToken());
+
+  const buildAuthHeaders = useCallback((extra?: Record<string, string>): Record<string, string> => {
+    const headers: Record<string, string> = { ...(extra ?? {}) };
+    if (tokenRef.current) {
+      headers['X-Cathobar-Token'] = tokenRef.current;
+    }
+    return headers;
+  }, []);
+
+  const checkAuthStatus = useCallback(async (tokenOverride?: string): Promise<boolean> => {
+    const candidate = tokenOverride !== undefined ? tokenOverride.trim() : tokenRef.current;
+    try {
+      const headers: Record<string, string> = {};
+      if (candidate) {
+        headers['X-Cathobar-Token'] = candidate;
+      }
+      const res = await fetch('/api/auth/status', { headers });
+      if (!res.ok) return false;
+      const json = (await res.json()) as { authRequired?: boolean; authenticated?: boolean };
+      const required = Boolean(json.authRequired);
+      const authed = Boolean(json.authenticated);
+      setAuthRequired(required);
+      setAuthError(required && !authed);
+      return !required || authed;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkAuthStatus();
+  }, [checkAuthStatus]);
+
+  const setAuthToken = useCallback(
+    async (raw: string): Promise<boolean> => {
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        setAuthError(authRequired);
+        return false;
+      }
+      const ok = await checkAuthStatus(trimmed);
+      if (ok) {
+        tokenRef.current = trimmed;
+        writeStoredToken(trimmed);
+        setAuthError(false);
+        return true;
+      }
+      setAuthError(true);
+      return false;
+    },
+    [authRequired, checkAuthStatus],
+  );
+
+  const clearAuthToken = useCallback(() => {
+    tokenRef.current = '';
+    writeStoredToken('');
+    setAuthError(authRequired);
+  }, [authRequired]);
 
   const refreshHistory = useCallback(async () => {
     try {
@@ -103,6 +206,11 @@ export function useCathobar(): CathobarHookResult {
               setLanUrls(msg.payload.lanUrls);
               setNowPlaying(msg.payload.nowPlaying ?? null);
               setSensors(msg.payload.sensors ?? []);
+              if (!hasInitialBootedRef.current) {
+                hasInitialBootedRef.current = true;
+                bootTokenRef.current += 1;
+                setBootEvent({ token: bootTokenRef.current, isInitial: true });
+              }
               break;
             case 'config:update':
               setConfig(msg.payload);
@@ -143,6 +251,15 @@ export function useCathobar(): CathobarHookResult {
             case 'sensors:update':
               setSensors(msg.payload);
               break;
+            case 'boot:replay':
+              bootTokenRef.current += 1;
+              setBootEvent({
+                token: bootTokenRef.current,
+                mode: msg.payload.mode,
+                glyphStyle: msg.payload.glyphStyle,
+                isInitial: false,
+              });
+              break;
           }
         } catch {
           // ignore malformed messages
@@ -173,72 +290,158 @@ export function useCathobar(): CathobarHookResult {
     };
   }, [refreshHistory]);
 
-  const updateConfig = useCallback(async (patch: PartialAppConfig) => {
-    const res = await fetch('/api/config', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
+  const updateConfig = useCallback(
+    async (patch: PartialAppConfig) => {
+      const res = await fetch('/api/config', {
+        method: 'PATCH',
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(patch),
+      });
+      if (res.status === 401) {
+        setAuthError(true);
+        return;
+      }
+      if (res.ok) {
+        const updated = (await res.json()) as AppConfig;
+        setConfig(updated);
+      }
+    },
+    [buildAuthHeaders],
+  );
+
+  const importConfig = useCallback(
+    async (raw: unknown): Promise<boolean> => {
+      const res = await fetch('/api/config/import', {
+        method: 'POST',
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(raw),
+      });
+      if (res.status === 401) {
+        setAuthError(true);
+        return false;
+      }
+      if (res.ok) {
+        const updated = (await res.json()) as AppConfig;
+        setConfig(updated);
+        return true;
+      }
+      return false;
+    },
+    [buildAuthHeaders],
+  );
+
+  const exportConfig = useCallback(async (): Promise<boolean> => {
+    const res = await fetch('/api/config/export', {
+      headers: buildAuthHeaders(),
     });
-    if (res.ok) {
-      const updated = (await res.json()) as AppConfig;
-      setConfig(updated);
+    if (res.status === 401) {
+      setAuthError(true);
+      return false;
     }
-  }, []);
+    if (!res.ok) return false;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'cathobar-config.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    return true;
+  }, [buildAuthHeaders]);
 
-  const importConfig = useCallback(async (raw: unknown): Promise<boolean> => {
-    const res = await fetch('/api/config/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(raw),
-    });
-    if (res.ok) {
-      const updated = (await res.json()) as AppConfig;
-      setConfig(updated);
-      return true;
-    }
-    return false;
-  }, []);
+  const applyScene = useCallback(
+    async (sceneId: string) => {
+      const res = await fetch(`/api/scenes/${encodeURIComponent(sceneId)}/apply`, {
+        method: 'POST',
+        headers: buildAuthHeaders(),
+      });
+      if (res.status === 401) {
+        setAuthError(true);
+        return;
+      }
+      if (res.ok) {
+        const updated = (await res.json()) as AppConfig;
+        setConfig(updated);
+      }
+    },
+    [buildAuthHeaders],
+  );
 
-  const applyScene = useCallback(async (sceneId: string) => {
-    const res = await fetch(`/api/scenes/${encodeURIComponent(sceneId)}/apply`, {
-      method: 'POST',
-    });
-    if (res.ok) {
-      const updated = (await res.json()) as AppConfig;
-      setConfig(updated);
-    }
-  }, []);
+  const pushMessage = useCallback(
+    async (input: PushMessageInput) => {
+      const res = await fetch('/api/push', {
+        method: 'POST',
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(input),
+      });
+      if (res.status === 401) {
+        setAuthError(true);
+      }
+    },
+    [buildAuthHeaders],
+  );
 
-  const pushMessage = useCallback(async (input: PushMessageInput) => {
-    await fetch('/api/push', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-  }, []);
+  const replayBoot = useCallback(
+    async (input?: BootReplayInput) => {
+      const res = await fetch('/api/boot/replay', {
+        method: 'POST',
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(input ?? {}),
+      });
+      if (res.status === 401) {
+        setAuthError(true);
+      }
+    },
+    [buildAuthHeaders],
+  );
 
-  const pushNowPlaying = useCallback(async (input: NowPlayingPushInput) => {
-    await fetch('/api/now-playing', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-  }, []);
+  const pushNowPlaying = useCallback(
+    async (input: NowPlayingPushInput) => {
+      const res = await fetch('/api/now-playing', {
+        method: 'POST',
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(input),
+      });
+      if (res.status === 401) {
+        setAuthError(true);
+      }
+    },
+    [buildAuthHeaders],
+  );
 
-  const pushSensor = useCallback(async (input: SensorPushInput) => {
-    await fetch('/api/sensors', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-  }, []);
+  const pushSensor = useCallback(
+    async (input: SensorPushInput) => {
+      const res = await fetch('/api/sensors', {
+        method: 'POST',
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(input),
+      });
+      if (res.status === 401) {
+        setAuthError(true);
+      }
+    },
+    [buildAuthHeaders],
+  );
 
-  const refreshSource = useCallback(async (id: TickerSourceId) => {
-    await fetch(`/api/sources/${id}/refresh`, { method: 'POST' });
-  }, []);
+  const refreshSource = useCallback(
+    async (id: TickerSourceId) => {
+      const res = await fetch(`/api/sources/${id}/refresh`, {
+        method: 'POST',
+        headers: buildAuthHeaders(),
+      });
+      if (res.status === 401) {
+        setAuthError(true);
+      }
+    },
+    [buildAuthHeaders],
+  );
 
   return {
     connected,
+    authRequired,
+    authError,
     config,
     items,
     lastBatch,
@@ -248,10 +451,15 @@ export function useCathobar(): CathobarHookResult {
     lanUrls,
     nowPlaying,
     sensors,
+    bootEvent,
+    setAuthToken,
+    clearAuthToken,
     updateConfig,
     importConfig,
+    exportConfig,
     applyScene,
     pushMessage,
+    replayBoot,
     pushNowPlaying,
     pushSensor,
     refreshSource,
