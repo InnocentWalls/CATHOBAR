@@ -10,8 +10,8 @@
     "dev": "concurrently -k -n shared,server,web -c cyan,green,magenta \"npm run dev -w @cathobar/shared\" \"npm run dev -w @cathobar/server\" \"npm run dev -w @cathobar/web\"",
     "build": "npm run build -w @cathobar/shared && npm run build -w @cathobar/server && npm run build -w @cathobar/web",
     "start": "npm run start -w @cathobar/server",
-    "typecheck": "npm run typecheck -w @cathobar/shared && npm run typecheck -w @cathobar/server && npm run typecheck -w @cathobar/web",
-    "test": "vitest run",
+    "typecheck": "npm run build -w @cathobar/shared && npm run typecheck -w @cathobar/server && npm run typecheck -w @cathobar/web",
+    "test": "npm run build -w @cathobar/shared && vitest run",
     "preview:win": "powershell -ExecutionPolicy Bypass -File scripts/launch-window.ps1",
     "start:win": "powershell -ExecutionPolicy Bypass -File scripts/launch-app.ps1"
   },
