@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, evaluateNightMode, type TickerItem } from '@cathobar/shared';
-import { computeScreenRegions, fitBreakingAlertText, wrapTextLines } from '../src/engine/board-renderer.js';
+import {
+  computeScreenRegions,
+  fitBarBreakingAlert,
+  fitBreakingAlertText,
+  wrapTextLines,
+} from '../src/engine/board-renderer.js';
 import { resolveItemIcon } from '../src/engine/pixel-icons.js';
 import { generateQrMatrix, renderQrSvg } from '../src/engine/qrcode.js';
 import { computeBloomDimensions, computePersistenceDecay } from '../src/engine/renderer-gl.js';
@@ -950,36 +955,41 @@ describe('High-refresh-rate & performance optimizations', () => {
     expect(snap240.bands[0]).toBeCloseTo(snap60.bands[0]!, 4);
   });
 
-  it('auto-fits tall breaking alert text larger than 36px for short messages and shrinks gracefully for long messages', () => {
+  it('auto-fits tall breaking alert text up to 80% of body height for short messages and shrinks gracefully for long messages', () => {
     const measureBold = (s: string, size: number) => s.length * size * 0.95;
 
     // 640x360 board metrics matching drawTallBreakingAlert
-    const contentH360 = 360 - 16 * 2 - Math.round(360 * 0.11); // ~288
-    const availBodyH360 = contentH360 - Math.round(contentH360 * 0.16) - Math.round(contentH360 * 0.06); // ~225
+    const contentH360 = 360 - 14 * 2 - Math.round(360 * 0.08); // ~303
+    const availBodyH360 = contentH360 - Math.round(contentH360 * 0.14) - Math.round(contentH360 * 0.04); // ~249
     const short360 = fitBreakingAlertText({
       text: '緊急地震速報：東京23区',
-      maxTextW: 640 - Math.round(640 * 0.05) * 2,
+      maxTextW: 640 - Math.round(640 * 0.04) * 2,
       availBodyH: availBodyH360,
-      minFontSize: Math.max(14, Math.round(contentH360 * 0.11)),
-      maxFontSize: Math.round(availBodyH360 * 0.42),
+      minFontSize: Math.max(14, Math.round(contentH360 * 0.10)),
+      maxFontSize: Math.round(availBodyH360 * 0.80),
+      maxLines: 5,
+      lineHeightRatio: 1.24,
       measureWidth: measureBold,
     });
-    expect(short360.textSize).toBeGreaterThan(36);
-    expect(short360.lines.length).toBeLessThanOrEqual(4);
+    expect(short360.textSize).toBeGreaterThan(45);
+    expect(short360.truncated).toBe(false);
+    expect(short360.lines.length).toBeLessThanOrEqual(5);
     expect(short360.lines.length * short360.lineH).toBeLessThanOrEqual(availBodyH360);
 
-    // 1280x720 board scales well beyond the old 36px cap
-    const contentH720 = 720 - 32 * 2 - Math.round(720 * 0.11); // ~577
-    const availBodyH720 = contentH720 - Math.round(contentH720 * 0.16) - Math.round(contentH720 * 0.06); // ~450
+    // 1280x720 board scales dynamically past 150px for very short alerts
+    const contentH720 = 720 - 29 * 2 - Math.round(720 * 0.08); // ~604
+    const availBodyH720 = contentH720 - Math.round(contentH720 * 0.14) - Math.round(contentH720 * 0.04); // ~495
     const short720 = fitBreakingAlertText({
       text: '津波警報発表',
-      maxTextW: 1280 - Math.round(1280 * 0.05) * 2,
+      maxTextW: 1280 - Math.round(1280 * 0.04) * 2,
       availBodyH: availBodyH720,
-      minFontSize: Math.max(14, Math.round(contentH720 * 0.11)),
-      maxFontSize: Math.round(availBodyH720 * 0.42),
+      minFontSize: Math.max(14, Math.round(contentH720 * 0.10)),
+      maxFontSize: Math.round(availBodyH720 * 0.80),
+      maxLines: 5,
+      lineHeightRatio: 1.24,
       measureWidth: measureBold,
     });
-    expect(short720.textSize).toBeGreaterThan(100);
+    expect(short720.textSize).toBeGreaterThan(150);
     expect(short720.lines.length * short720.lineH).toBeLessThanOrEqual(availBodyH720);
 
     // Long message shrinks to fit within maxLines without truncation while staying readable
@@ -987,29 +997,118 @@ describe('High-refresh-rate & performance optimizations', () => {
       '緊急地震速報テスト：関東南部で強い揺れが発生しました。強い揺れに警戒し、落ち着いて身の安全を確保してください。';
     const long360 = fitBreakingAlertText({
       text: longText,
-      maxTextW: 640 - Math.round(640 * 0.05) * 2,
+      maxTextW: 640 - Math.round(640 * 0.04) * 2,
       availBodyH: availBodyH360,
-      minFontSize: Math.max(14, Math.round(contentH360 * 0.11)),
-      maxFontSize: Math.round(availBodyH360 * 0.42),
+      minFontSize: Math.max(14, Math.round(contentH360 * 0.10)),
+      maxFontSize: Math.round(availBodyH360 * 0.80),
+      maxLines: 5,
+      lineHeightRatio: 1.24,
       measureWidth: measureBold,
     });
-    expect(long360.lines.length).toBeLessThanOrEqual(4);
+    expect(long360.lines.length).toBeLessThanOrEqual(5);
     expect(long360.lines.length * long360.lineH).toBeLessThanOrEqual(availBodyH360);
+    expect(long360.truncated).toBe(false);
     expect(long360.lines.join('')).not.toContain('…');
-    expect(long360.textSize).toBeGreaterThanOrEqual(Math.round(contentH360 * 0.11));
+    expect(long360.textSize).toBeGreaterThanOrEqual(Math.round(contentH360 * 0.10));
 
-    // Extremely long message falls back to minFontSize and truncates cleanly within 4 lines
+    // Extremely long message falls back to minFontSize and truncates cleanly within 5 lines
     const extremeText = longText.repeat(4);
     const extreme360 = fitBreakingAlertText({
       text: extremeText,
-      maxTextW: 640 - Math.round(640 * 0.05) * 2,
+      maxTextW: 640 - Math.round(640 * 0.04) * 2,
       availBodyH: availBodyH360,
-      minFontSize: 32,
-      maxFontSize: 94,
+      minFontSize: 30,
+      maxFontSize: 199,
+      maxLines: 5,
+      lineHeightRatio: 1.24,
       measureWidth: measureBold,
     });
-    expect(extreme360.textSize).toBe(32);
-    expect(extreme360.lines).toHaveLength(4);
-    expect(extreme360.lines[3]).toContain('…');
+    expect(extreme360.textSize).toBe(30);
+    expect(extreme360.truncated).toBe(true);
+    expect(extreme360.lines).toHaveLength(5);
+    expect(extreme360.lines[4]).toContain('…');
+  });
+
+  it('stacks source badge on row 1 and fits row 2 body to max width (or scrolls if too long) on bar alerts', () => {
+    const measureBold = (s: string, size: number) => s.length * size * 0.95;
+
+    // 1) Short message on ultrawide bar -> stacked-static with row 2 near full row2H
+    const shortBar = fitBarBreakingAlert({
+      width: 960,
+      height: 96,
+      badgeStr: '[NHK速報]',
+      text: '震度5弱 東京23区',
+      isShinkansen: false,
+      measureBadgeWidth: measureBold,
+      measureTextWidth: measureBold,
+    });
+    expect(shortBar.mode).toBe('stacked-static');
+    expect(shortBar.textSize).toBeGreaterThanOrEqual(44);
+    expect(shortBar.row2Cy).toBeGreaterThan(shortBar.row1Cy);
+
+    // 2) Medium message on 960x96 and 1920x200 bars -> stacked-static fitted cleanly to full bar width
+    const med96 = fitBarBreakingAlert({
+      width: 960,
+      height: 96,
+      badgeStr: '[NHK速報]',
+      text: '【テスト速報】NHKニュース速報アラート割り込みテスト',
+      isShinkansen: false,
+      measureBadgeWidth: measureBold,
+      measureTextWidth: measureBold,
+    });
+    expect(med96.mode).toBe('stacked-static');
+    expect(med96.textSize).toBeGreaterThanOrEqual(35);
+    expect(med96.textW).toBeLessThanOrEqual(med96.usableW);
+
+    const med200 = fitBarBreakingAlert({
+      width: 1920,
+      height: 200,
+      badgeStr: '[NHK速報]',
+      text: '【テスト速報】NHKニュース速報アラート割り込みテスト',
+      isShinkansen: false,
+      measureBadgeWidth: measureBold,
+      measureTextWidth: measureBold,
+    });
+    expect(med200.mode).toBe('stacked-static');
+    expect(med200.textSize).toBeGreaterThanOrEqual(70);
+    expect(med200.textW).toBeLessThanOrEqual(med200.usableW);
+
+    // 3) Very long message that would become too small statically -> stacked-scroll at large row 2 size
+    const longBar = fitBarBreakingAlert({
+      width: 640,
+      height: 96,
+      badgeStr: '[地震]',
+      text: 'これは非常に長い緊急速報テストメッセージであり、横幅いっぱいに縮小すると小さくなりすぎるため自動的に2段目の大文字横スクロールに切り替わります。',
+      isShinkansen: false,
+      measureBadgeWidth: measureBold,
+      measureTextWidth: measureBold,
+    });
+    expect(longBar.mode).toBe('stacked-scroll');
+    expect(longBar.textSize).toBeGreaterThanOrEqual(40);
+    expect(longBar.textW).toBeGreaterThan(longBar.usableW);
+
+    // 4) Thin Shinkansen LED bar (240x24) stays single-row inline
+    const ledShort = fitBarBreakingAlert({
+      width: 240,
+      height: 24,
+      badgeStr: '[速報]',
+      text: '震度4',
+      isShinkansen: true,
+      measureBadgeWidth: measureBold,
+      measureTextWidth: measureBold,
+    });
+    expect(ledShort.mode).toBe('inline-static');
+
+    const ledLong = fitBarBreakingAlert({
+      width: 240,
+      height: 24,
+      badgeStr: '[速報]',
+      text: '東北新幹線はやぶさ号 運行情報テストメッセージ',
+      isShinkansen: true,
+      measureBadgeWidth: measureBold,
+      measureTextWidth: measureBold,
+    });
+    expect(ledLong.mode).toBe('inline-scroll');
+    expect(ledLong.textSize).toBeGreaterThanOrEqual(16);
   });
 });

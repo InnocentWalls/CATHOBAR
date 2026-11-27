@@ -1085,6 +1085,25 @@ export interface FittedBreakingAlertText {
   textSize: number;
   lineH: number;
   lines: string[];
+  truncated: boolean;
+}
+
+export interface BarBreakingAlertLayout {
+  mode: 'stacked-static' | 'stacked-scroll' | 'inline-static' | 'inline-scroll';
+  barH: number;
+  contentH: number;
+  padX: number;
+  usableW: number;
+  iconSize: number;
+  badgeSize: number;
+  badgeW: number;
+  gap1: number;
+  gap2: number;
+  textSize: number;
+  textW: number;
+  totalW: number;
+  row1Cy: number;
+  row2Cy: number;
 }
 
 export function fitBreakingAlertText(params: {
@@ -1115,12 +1134,12 @@ export function fitBreakingAlertText(params: {
     const lines = wrapTextLines(text, maxTextW, (s) => measureWidth(s, size), maxLines + 1);
     if (lines.length === 0) {
       const lineH = Math.round(size * lineHeightRatio);
-      return { textSize: size, lineH, lines: [] };
+      return { textSize: size, lineH, lines: [], truncated: false };
     }
     if (lines.length > maxLines) return null;
     const lineH = Math.round(size * lineHeightRatio);
     if (lines.length * lineH > availBodyH) return null;
-    return { textSize: size, lineH, lines };
+    return { textSize: size, lineH, lines, truncated: false };
   };
 
   let lo = lowBound;
@@ -1147,7 +1166,8 @@ export function fitBreakingAlertText(params: {
     maxLines + 1,
   );
   const fallbackLines = rawFallback.slice(0, maxLines);
-  if (rawFallback.length > maxLines && fallbackLines.length > 0) {
+  const truncated = rawFallback.length > maxLines;
+  if (truncated && fallbackLines.length > 0) {
     const last = fallbackLines[maxLines - 1]!;
     if (measureWidth(`${last}…`, lowBound) <= maxTextW) {
       fallbackLines[maxLines - 1] = `${last}…`;
@@ -1163,6 +1183,168 @@ export function fitBreakingAlertText(params: {
     textSize: lowBound,
     lineH: Math.round(lowBound * lineHeightRatio),
     lines: fallbackLines,
+    truncated,
+  };
+}
+
+export function fitBarBreakingAlert(params: {
+  width: number;
+  height: number;
+  badgeStr: string;
+  text: string;
+  isShinkansen: boolean;
+  measureBadgeWidth: (s: string, fontSize: number) => number;
+  measureTextWidth: (s: string, fontSize: number) => number;
+}): BarBreakingAlertLayout {
+  const { width, height, badgeStr, text, isShinkansen, measureBadgeWidth, measureTextWidth } = params;
+
+  const barH = Math.max(height <= 32 ? 1 : 2, Math.round(height * 0.05));
+  const contentH = Math.max(10, height - barH * 2);
+  const padX = Math.max(10, Math.round(width * 0.015));
+  const usableW = Math.max(40, width - padX * 2);
+
+  // 2-row stacked bar layout: Row 1 centered icon + source badge, Row 2 full-width single-line alert body
+  if (contentH >= 48) {
+    const row1H = Math.max(14, Math.round(contentH * 0.30));
+    const rowGap = Math.max(2, Math.round(contentH * 0.04));
+    const row2H = Math.max(24, contentH - row1H - rowGap);
+    const row1Cy = barH + row1H * 0.54;
+    const row2Cy = barH + row1H + rowGap + row2H * 0.52;
+
+    const iconSize = Math.max(10, Math.min(Math.round(row1H * 0.78), row1H - 2));
+    const badgeSize = Math.max(10, Math.min(Math.round(row1H * 0.72), row1H - 2));
+    const gap1 = Math.max(4, Math.round(badgeSize * 0.35));
+    const badgeW = Math.ceil(measureBadgeWidth(badgeStr, badgeSize));
+
+    const maxBodyTextSize = Math.max(12, Math.min(Math.round(row2H * 0.84), row2H - 2));
+    const minStaticTextSize = Math.max(12, Math.round(row2H * 0.42));
+
+    let lo = minStaticTextSize;
+    let hi = maxBodyTextSize;
+    let bestSize = -1;
+    let bestTextW = 0;
+
+    while (lo <= hi) {
+      const size = Math.floor((lo + hi) / 2);
+      const textW = Math.ceil(measureTextWidth(text, size));
+      if (textW <= usableW) {
+        bestSize = size;
+        bestTextW = textW;
+        lo = size + 1;
+      } else {
+        hi = size - 1;
+      }
+    }
+
+    if (bestSize !== -1) {
+      return {
+        mode: 'stacked-static',
+        barH,
+        contentH,
+        padX,
+        usableW,
+        iconSize,
+        badgeSize,
+        badgeW,
+        gap1,
+        gap2: 0,
+        textSize: bestSize,
+        textW: bestTextW,
+        totalW: bestTextW,
+        row1Cy,
+        row2Cy,
+      };
+    }
+
+    const scrollTextSize = Math.max(12, Math.min(Math.round(row2H * 0.78), row2H - 2));
+    const textW = Math.ceil(measureTextWidth(text, scrollTextSize));
+    return {
+      mode: 'stacked-scroll',
+      barH,
+      contentH,
+      padX,
+      usableW,
+      iconSize,
+      badgeSize,
+      badgeW,
+      gap1,
+      gap2: 0,
+      textSize: scrollTextSize,
+      textW,
+      totalW: textW,
+      row1Cy,
+      row2Cy,
+    };
+  }
+
+  // Thin LED bar (contentH < 48): single-row inline layout
+  const cy = barH + contentH * 0.52;
+  const maxInlineSize = Math.max(11, Math.min(Math.round(contentH * 0.78), contentH - 2));
+  const minInlineStaticSize = Math.max(11, Math.round(contentH * 0.55));
+
+  let lo = minInlineStaticSize;
+  let hi = maxInlineSize;
+  let bestInline: BarBreakingAlertLayout | null = null;
+
+  while (lo <= hi) {
+    const size = Math.floor((lo + hi) / 2);
+    const iconSize = Math.max(10, Math.min(Math.round(size * 0.92), contentH - 2));
+    const badgeSize = Math.max(9, Math.round(size * 0.68));
+    const gap1 = Math.max(4, Math.round(size * 0.2));
+    const gap2 = Math.max(6, Math.round(size * 0.35));
+    const badgeW = Math.ceil(measureBadgeWidth(badgeStr, badgeSize));
+    const textW = Math.ceil(measureTextWidth(text, size));
+    const totalW = iconSize + gap1 + badgeW + gap2 + textW;
+    if (totalW <= usableW) {
+      bestInline = {
+        mode: 'inline-static',
+        barH,
+        contentH,
+        padX,
+        usableW,
+        iconSize,
+        badgeSize,
+        badgeW,
+        gap1,
+        gap2,
+        textSize: size,
+        textW,
+        totalW,
+        row1Cy: cy,
+        row2Cy: cy,
+      };
+      lo = size + 1;
+    } else {
+      hi = size - 1;
+    }
+  }
+
+  if (bestInline) return bestInline;
+
+  const scrollRatio = isShinkansen ? 0.76 : 0.72;
+  const textSize = Math.max(11, Math.min(Math.round(contentH * scrollRatio), contentH - 2));
+  const iconSize = Math.max(10, Math.min(Math.round(textSize * 0.92), contentH - 2));
+  const badgeSize = Math.max(9, Math.round(textSize * 0.68));
+  const gap1 = Math.max(4, Math.round(textSize * 0.2));
+  const gap2 = Math.max(6, Math.round(textSize * 0.35));
+  const badgeW = Math.ceil(measureBadgeWidth(badgeStr, badgeSize));
+  const textW = Math.ceil(measureTextWidth(text, textSize));
+  return {
+    mode: 'inline-scroll',
+    barH,
+    contentH,
+    padX,
+    usableW,
+    iconSize,
+    badgeSize,
+    badgeW,
+    gap1,
+    gap2,
+    textSize,
+    textW,
+    totalW: iconSize + gap1 + badgeW + gap2 + textW,
+    row1Cy: cy,
+    row2Cy: cy,
   };
 }
 
@@ -1192,19 +1374,19 @@ export function drawTallBreakingAlert(params: {
   ctx.fillStyle = bgTint;
   ctx.fillRect(0, 0, width, height);
 
-  const barH = Math.max(4, Math.round(height * 0.045));
+  const barH = Math.max(4, Math.round(height * 0.04));
   ctx.fillStyle = borderColor;
   ctx.fillRect(0, 0, width, barH);
   ctx.fillRect(0, height - barH, width, barH);
 
-  const contentTop = barH + Math.round(height * 0.055);
-  const contentH = Math.max(40, height - barH * 2 - Math.round(height * 0.11));
-  const padX = Math.max(14, Math.round(width * 0.05));
+  const contentTop = barH + Math.round(height * 0.04);
+  const contentH = Math.max(40, height - barH * 2 - Math.round(height * 0.08));
+  const padX = Math.max(14, Math.round(width * 0.04));
   const maxTextW = Math.max(60, width - padX * 2);
 
-  const iconSize = Math.max(18, Math.round(contentH * 0.16));
-  const badgeSize = Math.max(14, Math.round(contentH * 0.11));
-  const headerGap = Math.max(10, Math.round(contentH * 0.06));
+  const iconSize = Math.max(16, Math.round(contentH * 0.14));
+  const badgeSize = Math.max(13, Math.round(contentH * 0.10));
+  const headerGap = Math.max(8, Math.round(contentH * 0.04));
   const bodyTop = contentTop + iconSize + headerGap;
   const availBodyH = Math.max(24, contentTop + contentH - bodyTop);
 
@@ -1231,9 +1413,9 @@ export function drawTallBreakingAlert(params: {
   ctx.fillStyle = isMono ? '#ffffff' : '#ff3b30';
   ctx.fillText(badgeStr, headerStartX + iconSize + 10, headerCy);
 
-  // Auto-fit multi-line alert body without an arbitrary 36px cap
-  const minTextSize = Math.max(14, Math.round(contentH * 0.11));
-  const maxTextSize = Math.max(minTextSize, Math.round(availBodyH * 0.42));
+  // Auto-fit multi-line alert body cleanly up to 80% of available body height
+  const minTextSize = Math.max(14, Math.round(contentH * 0.10));
+  const maxTextSize = Math.max(minTextSize, Math.round(availBodyH * 0.80));
   const cacheKey = `${width}|${height}|${fontFam}|${item.text}`;
   let fitted: FittedBreakingAlertText;
   if (tallBreakingCache?.key === cacheKey) {
@@ -1245,8 +1427,8 @@ export function drawTallBreakingAlert(params: {
       availBodyH,
       minFontSize: minTextSize,
       maxFontSize: maxTextSize,
-      maxLines: 4,
-      lineHeightRatio: 1.28,
+      maxLines: 5,
+      lineHeightRatio: 1.24,
       measureWidth: (s, size) => {
         ctx.font = `700 ${size}px ${fontFam}`;
         return ctx.measureText(s).width;

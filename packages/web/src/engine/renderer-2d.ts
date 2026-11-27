@@ -15,6 +15,8 @@ import {
   drawBoardHeader,
   drawFullScreenClockShowcase,
   drawTallBreakingAlert,
+  fitBarBreakingAlert,
+  type BarBreakingAlertLayout,
 } from './board-renderer.js';
 import { drawBootSequence, type ActiveBootSequence } from './boot-sequence.js';
 import { drawPixelIcon, resolveItemIcon } from './pixel-icons.js';
@@ -55,6 +57,7 @@ export class Renderer2D {
   private activeFontFamily = FONT_FAMILY;
   private readonly spanSprites = new Map<string, SpanSprite>();
   private readonly clockWidthCache = new Map<string, number>();
+  private barBreakingCache: { key: string; layout: BarBreakingAlertLayout } | null = null;
 
   constructor() {
     this.canvas = document.createElement('canvas');
@@ -68,6 +71,7 @@ export class Renderer2D {
       void document.fonts.ready.then(() => {
         this.spanSprites.clear();
         this.clockWidthCache.clear();
+        this.barBreakingCache = null;
       });
     }
   }
@@ -222,7 +226,7 @@ export class Renderer2D {
     }
 
     if (breakingAlert) {
-      if (this.height >= 160) {
+      if (effectiveScreenLayout !== 'bar' && this.height >= 160) {
         drawTallBreakingAlert({
           ctx,
           width: this.width,
@@ -464,64 +468,125 @@ export class Renderer2D {
     ctx.fillStyle = bgTint;
     ctx.fillRect(0, 0, this.width, this.height);
 
-    const barH = Math.max(this.height <= 32 ? 1 : 2, Math.round(this.height * 0.06));
+    const fontFam = isShinkansen ? LED_FONT_FAMILY : FONT_FAMILY;
+    const badgeStr = `[${item.badge}]`;
+    const cacheKey = `${this.width}|${this.height}|${fontFam}|${badgeStr}|${item.text}`;
+    let layout: BarBreakingAlertLayout;
+    if (this.barBreakingCache?.key === cacheKey) {
+      layout = this.barBreakingCache.layout;
+    } else {
+      layout = fitBarBreakingAlert({
+        width: this.width,
+        height: this.height,
+        badgeStr,
+        text: item.text,
+        isShinkansen,
+        measureBadgeWidth: (s, size) => {
+          ctx.font = `700 ${size}px ${fontFam}`;
+          return ctx.measureText(s).width;
+        },
+        measureTextWidth: (s, size) => {
+          ctx.font = `700 ${size}px ${fontFam}`;
+          return ctx.measureText(s).width;
+        },
+      });
+      this.barBreakingCache = { key: cacheKey, layout };
+    }
+
+    const {
+      barH,
+      contentH,
+      padX,
+      usableW,
+      iconSize,
+      badgeSize,
+      badgeW,
+      gap1,
+      gap2,
+      textSize,
+      textW,
+      totalW,
+      row1Cy,
+      row2Cy,
+    } = layout;
+
     ctx.fillStyle = borderColor;
     ctx.fillRect(0, 0, this.width, barH);
     ctx.fillRect(0, this.height - barH, this.width, barH);
-
-    const contentH = Math.max(10, this.height - barH * 2);
-    const cy = barH + contentH * 0.52;
-    const fontFam = isShinkansen ? LED_FONT_FAMILY : FONT_FAMILY;
-
-    const textRatio = isShinkansen && this.height <= 48 ? 0.72 : 0.62;
-    const iconSize = Math.max(10, Math.min(Math.round(contentH * 0.68), contentH - 2));
-    const badgeSize = Math.max(9, Math.min(Math.round(contentH * 0.48), contentH - 4));
-    const textSize = Math.max(11, Math.min(Math.round(contentH * textRatio), contentH - 2));
-
-    const badgeStr = `[${item.badge}]`;
-    ctx.font = `700 ${badgeSize}px ${fontFam}`;
-    const badgeW = Math.ceil(ctx.measureText(badgeStr).width) + 8;
-
-    ctx.font = `700 ${textSize}px ${fontFam}`;
-    const textW = Math.ceil(ctx.measureText(item.text).width);
-    const totalW = iconSize + 8 + badgeW + textW;
-
-    let cursorX = 10;
-    if (totalW <= this.width - 20) {
-      cursorX = Math.max(10, (this.width - totalW) * 0.5);
-    } else {
-      const overflow = totalW - (this.width - 24);
-      const scrollWindow = Math.max(2, alert.durationSec - 1.5);
-      const t = Math.max(0, Math.min(1, (elapsedSec - 0.8) / scrollWindow));
-      cursorX = 12 - overflow * t;
-    }
 
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, barH, this.width, contentH);
     ctx.clip();
 
-    drawPixelIcon(
-      ctx,
-      resolveItemIcon(item),
-      cursorX,
-      cy,
-      iconSize,
-      display.visualMode,
-      isShinkansen ? '#ff3b30' : item.color,
-      true,
-    );
-    cursorX += iconSize + 8;
+    if (layout.mode === 'stacked-static' || layout.mode === 'stacked-scroll') {
+      // Row 1: centered pixel icon + source badge
+      const headerTotalW = iconSize + gap1 + badgeW;
+      const headerStartX = Math.max(padX, (this.width - headerTotalW) * 0.5);
+      drawPixelIcon(
+        ctx,
+        resolveItemIcon(item),
+        headerStartX,
+        row1Cy,
+        iconSize,
+        display.visualMode,
+        isShinkansen ? '#ff3b30' : item.color,
+        true,
+      );
 
-    ctx.textBaseline = 'middle';
-    ctx.font = `700 ${badgeSize}px ${fontFam}`;
-    ctx.fillStyle = isMono ? '#ffffff' : '#ff3b30';
-    ctx.fillText(badgeStr, cursorX, cy);
-    cursorX += badgeW;
+      ctx.textBaseline = 'middle';
+      ctx.font = `700 ${badgeSize}px ${fontFam}`;
+      ctx.fillStyle = isMono ? '#ffffff' : '#ff3b30';
+      ctx.fillText(badgeStr, headerStartX + iconSize + gap1, row1Cy);
 
-    ctx.font = `700 ${textSize}px ${fontFam}`;
-    ctx.fillStyle = isShinkansen ? '#ff9614' : '#ffffff';
-    ctx.fillText(item.text, cursorX, cy);
+      // Row 2: single-line alert body sized maximally across full width, or scrolled if too long
+      let textX: number;
+      if (layout.mode === 'stacked-static') {
+        textX = Math.max(padX, (this.width - textW) * 0.5);
+      } else {
+        const overflow = Math.max(0, textW - usableW);
+        const scrollWindow = Math.max(2, alert.durationSec - 1.4);
+        const t = Math.max(0, Math.min(1, (elapsedSec - 0.7) / scrollWindow));
+        textX = padX - overflow * t;
+      }
+
+      ctx.font = `700 ${textSize}px ${fontFam}`;
+      ctx.fillStyle = isShinkansen ? '#ff9614' : '#ffffff';
+      ctx.fillText(item.text, textX, row2Cy);
+    } else {
+      let cursorX: number;
+      if (layout.mode === 'inline-static') {
+        cursorX = Math.max(padX, (this.width - totalW) * 0.5);
+      } else {
+        const overflow = Math.max(0, totalW - usableW);
+        const scrollWindow = Math.max(2, alert.durationSec - 1.4);
+        const t = Math.max(0, Math.min(1, (elapsedSec - 0.7) / scrollWindow));
+        cursorX = padX - overflow * t;
+      }
+
+      drawPixelIcon(
+        ctx,
+        resolveItemIcon(item),
+        cursorX,
+        row1Cy,
+        iconSize,
+        display.visualMode,
+        isShinkansen ? '#ff3b30' : item.color,
+        true,
+      );
+      cursorX += iconSize + gap1;
+
+      ctx.textBaseline = 'middle';
+      ctx.font = `700 ${badgeSize}px ${fontFam}`;
+      ctx.fillStyle = isMono ? '#ffffff' : '#ff3b30';
+      ctx.fillText(badgeStr, cursorX, row1Cy);
+      cursorX += badgeW + gap2;
+
+      ctx.font = `700 ${textSize}px ${fontFam}`;
+      ctx.fillStyle = isShinkansen ? '#ff9614' : '#ffffff';
+      ctx.fillText(item.text, cursorX, row2Cy);
+    }
+
     ctx.restore();
   }
 
