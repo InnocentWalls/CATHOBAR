@@ -40,12 +40,17 @@ const MAX_BOARD_TEXT_CACHE = 256;
 const widthCache = new Map<string, number>();
 const truncateCache = new Map<string, string>();
 const wrapCache = new Map<string, string[]>();
+let tallBreakingCache: {
+  key: string;
+  layout: FittedBreakingAlertText;
+} | null = null;
 
 if (typeof document !== 'undefined' && document.fonts?.ready) {
   void document.fonts.ready.then(() => {
     widthCache.clear();
     truncateCache.clear();
     wrapCache.clear();
+    tallBreakingCache = null;
   });
 }
 
@@ -1076,6 +1081,91 @@ export function drawFullScreenClockShowcase(params: {
   ctx.restore();
 }
 
+export interface FittedBreakingAlertText {
+  textSize: number;
+  lineH: number;
+  lines: string[];
+}
+
+export function fitBreakingAlertText(params: {
+  text: string;
+  maxTextW: number;
+  availBodyH: number;
+  minFontSize: number;
+  maxFontSize: number;
+  maxLines?: number;
+  lineHeightRatio?: number;
+  measureWidth: (s: string, fontSize: number) => number;
+}): FittedBreakingAlertText {
+  const {
+    text,
+    maxTextW,
+    availBodyH,
+    minFontSize,
+    maxFontSize,
+    maxLines = 4,
+    lineHeightRatio = 1.28,
+    measureWidth,
+  } = params;
+
+  const lowBound = Math.max(8, Math.round(minFontSize));
+  const highBound = Math.max(lowBound, Math.round(maxFontSize));
+
+  const trySize = (size: number): FittedBreakingAlertText | null => {
+    const lines = wrapTextLines(text, maxTextW, (s) => measureWidth(s, size), maxLines + 1);
+    if (lines.length === 0) {
+      const lineH = Math.round(size * lineHeightRatio);
+      return { textSize: size, lineH, lines: [] };
+    }
+    if (lines.length > maxLines) return null;
+    const lineH = Math.round(size * lineHeightRatio);
+    if (lines.length * lineH > availBodyH) return null;
+    return { textSize: size, lineH, lines };
+  };
+
+  let lo = lowBound;
+  let hi = highBound;
+  let best: FittedBreakingAlertText | null = null;
+
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = trySize(mid);
+    if (candidate) {
+      best = candidate;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  if (best) return best;
+
+  const rawFallback = wrapTextLines(
+    text,
+    maxTextW,
+    (s) => measureWidth(s, lowBound),
+    maxLines + 1,
+  );
+  const fallbackLines = rawFallback.slice(0, maxLines);
+  if (rawFallback.length > maxLines && fallbackLines.length > 0) {
+    const last = fallbackLines[maxLines - 1]!;
+    if (measureWidth(`${last}…`, lowBound) <= maxTextW) {
+      fallbackLines[maxLines - 1] = `${last}…`;
+    } else {
+      const chars = Array.from(last);
+      while (chars.length > 1 && measureWidth(`${chars.join('')}…`, lowBound) > maxTextW) {
+        chars.pop();
+      }
+      fallbackLines[maxLines - 1] = `${chars.join('')}…`;
+    }
+  }
+  return {
+    textSize: lowBound,
+    lineH: Math.round(lowBound * lineHeightRatio),
+    lines: fallbackLines,
+  };
+}
+
 export function drawTallBreakingAlert(params: {
   ctx: CanvasRenderingContext2D;
   width: number;
@@ -1102,19 +1192,21 @@ export function drawTallBreakingAlert(params: {
   ctx.fillStyle = bgTint;
   ctx.fillRect(0, 0, width, height);
 
-  const barH = Math.max(4, Math.round(height * 0.055));
+  const barH = Math.max(4, Math.round(height * 0.045));
   ctx.fillStyle = borderColor;
   ctx.fillRect(0, 0, width, barH);
   ctx.fillRect(0, height - barH, width, barH);
 
-  const contentTop = barH + Math.round(height * 0.08);
-  const contentH = height - barH * 2 - Math.round(height * 0.16);
-  const padX = Math.max(16, Math.round(width * 0.06));
+  const contentTop = barH + Math.round(height * 0.055);
+  const contentH = Math.max(40, height - barH * 2 - Math.round(height * 0.11));
+  const padX = Math.max(14, Math.round(width * 0.05));
   const maxTextW = Math.max(60, width - padX * 2);
 
-  const iconSize = Math.max(18, Math.round(contentH * 0.18));
-  const badgeSize = Math.max(14, Math.round(contentH * 0.12));
-  const textSize = Math.max(14, Math.min(36, Math.round(contentH * 0.13)));
+  const iconSize = Math.max(18, Math.round(contentH * 0.16));
+  const badgeSize = Math.max(14, Math.round(contentH * 0.11));
+  const headerGap = Math.max(10, Math.round(contentH * 0.06));
+  const bodyTop = contentTop + iconSize + headerGap;
+  const availBodyH = Math.max(24, contentTop + contentH - bodyTop);
 
   // Header line: Pixel icon + [BADGE]
   const badgeStr = `[${item.badge}]`;
@@ -1139,17 +1231,39 @@ export function drawTallBreakingAlert(params: {
   ctx.fillStyle = isMono ? '#ffffff' : '#ff3b30';
   ctx.fillText(badgeStr, headerStartX + iconSize + 10, headerCy);
 
-  // Wrapped multi-line alert body
-  ctx.font = `700 ${textSize}px ${fontFam}`;
-  const lines = wrapTextLines(item.text, maxTextW, (s) => ctx.measureText(s).width, 4);
-  const lineH = Math.round(textSize * 1.38);
-  const blockStartY =
-    contentTop + iconSize + Math.max(14, (contentH - iconSize - lines.length * lineH) * 0.4);
+  // Auto-fit multi-line alert body without an arbitrary 36px cap
+  const minTextSize = Math.max(14, Math.round(contentH * 0.11));
+  const maxTextSize = Math.max(minTextSize, Math.round(availBodyH * 0.42));
+  const cacheKey = `${width}|${height}|${fontFam}|${item.text}`;
+  let fitted: FittedBreakingAlertText;
+  if (tallBreakingCache?.key === cacheKey) {
+    fitted = tallBreakingCache.layout;
+  } else {
+    fitted = fitBreakingAlertText({
+      text: item.text,
+      maxTextW,
+      availBodyH,
+      minFontSize: minTextSize,
+      maxFontSize: maxTextSize,
+      maxLines: 4,
+      lineHeightRatio: 1.28,
+      measureWidth: (s, size) => {
+        ctx.font = `700 ${size}px ${fontFam}`;
+        return ctx.measureText(s).width;
+      },
+    });
+    tallBreakingCache = { key: cacheKey, layout: fitted };
+  }
 
+  const { textSize, lineH, lines } = fitted;
+  const blockH = lines.length * lineH;
+  const firstLineY = bodyTop + Math.max(0, (availBodyH - blockH) * 0.5) + lineH * 0.5;
+
+  ctx.font = `700 ${textSize}px ${fontFam}`;
   ctx.textAlign = 'center';
   ctx.fillStyle = isShinkansen ? '#ff9614' : '#ffffff';
   for (let i = 0; i < lines.length; i += 1) {
-    ctx.fillText(lines[i]!, width * 0.5, blockStartY + i * lineH);
+    ctx.fillText(lines[i]!, width * 0.5, firstLineY + i * lineH);
   }
   ctx.textAlign = 'left';
 }

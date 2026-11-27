@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, evaluateNightMode, type TickerItem } from '@cathobar/shared';
-import { computeScreenRegions, wrapTextLines } from '../src/engine/board-renderer.js';
+import { computeScreenRegions, fitBreakingAlertText, wrapTextLines } from '../src/engine/board-renderer.js';
 import { resolveItemIcon } from '../src/engine/pixel-icons.js';
 import { generateQrMatrix, renderQrSvg } from '../src/engine/qrcode.js';
 import { computeBloomDimensions, computePersistenceDecay } from '../src/engine/renderer-gl.js';
@@ -948,5 +948,68 @@ describe('High-refresh-rate & performance optimizations', () => {
 
     // After 0.1s at 60Hz vs 240Hz, band levels match closely
     expect(snap240.bands[0]).toBeCloseTo(snap60.bands[0]!, 4);
+  });
+
+  it('auto-fits tall breaking alert text larger than 36px for short messages and shrinks gracefully for long messages', () => {
+    const measureBold = (s: string, size: number) => s.length * size * 0.95;
+
+    // 640x360 board metrics matching drawTallBreakingAlert
+    const contentH360 = 360 - 16 * 2 - Math.round(360 * 0.11); // ~288
+    const availBodyH360 = contentH360 - Math.round(contentH360 * 0.16) - Math.round(contentH360 * 0.06); // ~225
+    const short360 = fitBreakingAlertText({
+      text: '緊急地震速報：東京23区',
+      maxTextW: 640 - Math.round(640 * 0.05) * 2,
+      availBodyH: availBodyH360,
+      minFontSize: Math.max(14, Math.round(contentH360 * 0.11)),
+      maxFontSize: Math.round(availBodyH360 * 0.42),
+      measureWidth: measureBold,
+    });
+    expect(short360.textSize).toBeGreaterThan(36);
+    expect(short360.lines.length).toBeLessThanOrEqual(4);
+    expect(short360.lines.length * short360.lineH).toBeLessThanOrEqual(availBodyH360);
+
+    // 1280x720 board scales well beyond the old 36px cap
+    const contentH720 = 720 - 32 * 2 - Math.round(720 * 0.11); // ~577
+    const availBodyH720 = contentH720 - Math.round(contentH720 * 0.16) - Math.round(contentH720 * 0.06); // ~450
+    const short720 = fitBreakingAlertText({
+      text: '津波警報発表',
+      maxTextW: 1280 - Math.round(1280 * 0.05) * 2,
+      availBodyH: availBodyH720,
+      minFontSize: Math.max(14, Math.round(contentH720 * 0.11)),
+      maxFontSize: Math.round(availBodyH720 * 0.42),
+      measureWidth: measureBold,
+    });
+    expect(short720.textSize).toBeGreaterThan(100);
+    expect(short720.lines.length * short720.lineH).toBeLessThanOrEqual(availBodyH720);
+
+    // Long message shrinks to fit within maxLines without truncation while staying readable
+    const longText =
+      '緊急地震速報テスト：関東南部で強い揺れが発生しました。強い揺れに警戒し、落ち着いて身の安全を確保してください。';
+    const long360 = fitBreakingAlertText({
+      text: longText,
+      maxTextW: 640 - Math.round(640 * 0.05) * 2,
+      availBodyH: availBodyH360,
+      minFontSize: Math.max(14, Math.round(contentH360 * 0.11)),
+      maxFontSize: Math.round(availBodyH360 * 0.42),
+      measureWidth: measureBold,
+    });
+    expect(long360.lines.length).toBeLessThanOrEqual(4);
+    expect(long360.lines.length * long360.lineH).toBeLessThanOrEqual(availBodyH360);
+    expect(long360.lines.join('')).not.toContain('…');
+    expect(long360.textSize).toBeGreaterThanOrEqual(Math.round(contentH360 * 0.11));
+
+    // Extremely long message falls back to minFontSize and truncates cleanly within 4 lines
+    const extremeText = longText.repeat(4);
+    const extreme360 = fitBreakingAlertText({
+      text: extremeText,
+      maxTextW: 640 - Math.round(640 * 0.05) * 2,
+      availBodyH: availBodyH360,
+      minFontSize: 32,
+      maxFontSize: 94,
+      measureWidth: measureBold,
+    });
+    expect(extreme360.textSize).toBe(32);
+    expect(extreme360.lines).toHaveLength(4);
+    expect(extreme360.lines[3]).toContain('…');
   });
 });

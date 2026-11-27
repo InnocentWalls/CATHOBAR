@@ -464,18 +464,19 @@ export class Renderer2D {
     ctx.fillStyle = bgTint;
     ctx.fillRect(0, 0, this.width, this.height);
 
-    const barH = Math.max(2, Math.round(this.height * 0.08));
+    const barH = Math.max(this.height <= 32 ? 1 : 2, Math.round(this.height * 0.06));
     ctx.fillStyle = borderColor;
     ctx.fillRect(0, 0, this.width, barH);
     ctx.fillRect(0, this.height - barH, this.width, barH);
 
-    const contentH = this.height - barH * 2;
+    const contentH = Math.max(10, this.height - barH * 2);
     const cy = barH + contentH * 0.52;
     const fontFam = isShinkansen ? LED_FONT_FAMILY : FONT_FAMILY;
 
-    const iconSize = Math.max(12, Math.round(contentH * 0.56));
-    const badgeSize = Math.max(10, Math.round(contentH * 0.34));
-    const textSize = Math.max(12, Math.round(contentH * 0.44));
+    const textRatio = isShinkansen && this.height <= 48 ? 0.72 : 0.62;
+    const iconSize = Math.max(10, Math.min(Math.round(contentH * 0.68), contentH - 2));
+    const badgeSize = Math.max(9, Math.min(Math.round(contentH * 0.48), contentH - 4));
+    const textSize = Math.max(11, Math.min(Math.round(contentH * textRatio), contentH - 2));
 
     const badgeStr = `[${item.badge}]`;
     ctx.font = `700 ${badgeSize}px ${fontFam}`;
@@ -494,6 +495,11 @@ export class Renderer2D {
       const t = Math.max(0, Math.min(1, (elapsedSec - 0.8) / scrollWindow));
       cursorX = 12 - overflow * t;
     }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, barH, this.width, contentH);
+    ctx.clip();
 
     drawPixelIcon(
       ctx,
@@ -516,6 +522,7 @@ export class Renderer2D {
     ctx.font = `700 ${textSize}px ${fontFam}`;
     ctx.fillStyle = isShinkansen ? '#ff9614' : '#ffffff';
     ctx.fillText(item.text, cursorX, cy);
+    ctx.restore();
   }
 
   private drawSplitFlap(
